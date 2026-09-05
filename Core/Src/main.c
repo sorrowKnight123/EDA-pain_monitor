@@ -195,6 +195,9 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    __WFI();   /* 睡眠模式（SLEEPDEEP=0）：TIM3/ADC/DMA 持续运行，仅内核时钟门控。
+                * 任意中断唤醒——DMA 半区满(20ms)推波形，SysTick(1ms)兜底驱动 500ms
+                * 文本刷新与喂狗。最坏唤醒延迟 1ms，相对 20ms 帧周期可忽略 */
   }
   /* USER CODE END 3 */
 }
