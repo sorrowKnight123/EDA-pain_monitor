@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 #include "ssd1289_fsmc.h"
 #include "app_config.h"
 /* USER CODE END Includes */
@@ -191,6 +192,14 @@ int main(void)
 	  {
 		  last_lcd_update = HAL_GetTick();
 		  LCD_DrawSkinText(read_g1(), read_g2());
+#if ADC_DEBUG_SHOW_RAW
+		  {	char dbg[40];
+			snprintf(dbg, sizeof dbg, "R1=%4u R2=%4u S=%5u E=%3lu",
+					(unsigned)adc_value1, (unsigned)adc_value2,
+					(unsigned)adc_seq, (unsigned long)adc_err_cnt);
+			LCD_DebugLine(dbg);
+		  }
+#endif
 	  }
     /* USER CODE END WHILE */
 

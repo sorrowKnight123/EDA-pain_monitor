@@ -129,6 +129,7 @@ void LCD_CN16Char(uint16_t x, uint16_t y, const uint8_t *glyph32, uint8_t size, 
 void LCD_InitLayout(void);
 void LCD_DrawSkinText(float G1, float G2);
 void LCD_WaveformPush(float G1, float G2);
+void LCD_DebugLine(const char *text);
 
 #define LCD_ON 					LCD_Send_Reg(0x0007, 0x0033);
 #define LCD_OFF					LCD_Send_Reg(0x0007, 0x0000);

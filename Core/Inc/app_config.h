@@ -27,6 +27,11 @@ extern "C" {
 /* 麻醉状态判定阈值（μS）：|G1-G2| < G_DIFF_THRESH → 麻醉完全 */
 #define G_DIFF_THRESH         10.0f
 
+/* ---- 调试 ---- */
+/* 1 = 屏幕底部显示原始诊断行（R1/R2 原始码值、SEQ 有效样本计数、ERR 错误计数）。
+ * 排查采集问题用，定位完成后置 0 */
+#define ADC_DEBUG_SHOW_RAW    0
+
 #ifdef __cplusplus
 }
 #endif

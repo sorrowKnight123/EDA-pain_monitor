@@ -724,6 +724,13 @@ void LCD_DrawSkinText(float G1, float G2)
 	}
 }
 
+/* 底部调试行（y=220 白色 ASCII）：诊断采集链路用，与正常显示无关 */
+void LCD_DebugLine(const char *text)
+{
+	LCD_Rect_Fill(0, 220, 320, 16, GRAY);
+	LCD_BitmapFont(0, 220, text, XGA_8x16, 16, 1, WHITE);
+}
+
 /* 双波形实时更新：每个 ADC 采样点推进两路电导曲线 */
 void LCD_WaveformPush(float G1, float G2)
 {

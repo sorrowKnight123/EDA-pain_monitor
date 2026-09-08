@@ -92,6 +92,9 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
     /* ADC1 clock enable */
     __HAL_RCC_ADC1_CLK_ENABLE();
 
+    /* DMA1 clock enable（ADC1 的 DMA 在 DMA1_Channel1，时钟必须先开） */
+    __HAL_RCC_DMA1_CLK_ENABLE();
+
     __HAL_RCC_GPIOC_CLK_ENABLE();
     /**ADC1 GPIO Configuration
     PC0     ------> ADC1_IN10
