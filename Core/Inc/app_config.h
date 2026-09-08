@@ -20,6 +20,15 @@ extern "C" {
  * 群延迟 ≈ (FILT_N-1)/2 × 20ms；FILT_N=8 时约 70ms，加大更平滑但延迟更高 */
 #define FILT_N                8
 
+/* ---- 采集停摆监测（健壮性） ----
+ * DMA 传输错误(TE)时 HAL 会硬件停转通道并关闭全部 DMA 中断（RM0008 行为），
+ * 采集静默停止且 IWDG 无法察觉（主循环仍在运行喂狗）。
+ * 以 adc_seq（预期 50Hz 增长）为心跳：超时未增长即就地重启 ADC+DMA；
+ * 短窗口内连续失败超限则整机复位 */
+#define ADC_STALL_RECOVER_MS  300    /* seq 无增长判定停摆的时长 */
+#define ADC_STALL_BURST_MS    10000  /* 视为"连续失败"的窗口 */
+#define ADC_STALL_RESET_LIMIT 3      /* 窗口内连续停摆次数上限，超过则复位 */
+
 /* ---- 电导量程与判定 ---- */
 /* 波形纵轴满量程（μS），LCD_InitLayout 的刻度数组 tick_v 需与此一致 */
 #define G_RANGE_MAX           50.0f

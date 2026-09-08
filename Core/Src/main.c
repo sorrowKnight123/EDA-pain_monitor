@@ -55,6 +55,7 @@
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void MX_IWDG_Init(void);
+static void adc_stall_recover(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -69,6 +70,7 @@ volatile uint16_t adc_seq = 0;  /* 有效样本计数，主循环据此消费（
 static volatile uint16_t adc_dma_buf[ADC_DMA_BUF_LEN];
 
 volatile uint32_t adc_err_cnt = 0;   /* ADC/DMA 错误计数（overrun 等），调试器/诊断用 */
+volatile uint32_t adc_stall_cnt = 0; /* 采集停摆（含已恢复）总次数，驱动屏上告警标记 */
 volatile uint8_t  lcd_ready = 0;     /* LCD 可用标志：Error_Handler 据此决定能否上屏报错 */
 
 /* 8 点整数滑动平均（窗口长度 FILT_N 见 app_config.h）：O(1) 更新、无软浮点 */
@@ -180,6 +182,31 @@ int main(void)
   while (1)
   {
 	  IWDG->KR = 0xAAAA;   /* 喂狗 */
+
+	  /* 采集停摆监测：adc_seq 预期 50Hz 增长，超时未增长说明采集链路已死
+	   * （DMA 传输错误致通道停转、ADC 停转等），就地重启恢复；
+	   * 短窗口内连续失败超限则整机复位。主循环喂狗不受影响，
+	   * IWDG 察觉不了这类"数据通路死亡"，必须在此显式监测 */
+	  {	static uint16_t seen_seq = 0;
+		static uint32_t seen_tick = 0, last_stall_tick = 0;
+		static uint8_t burst = 0;
+		uint32_t now = HAL_GetTick();
+		if (adc_seq != seen_seq)
+		{	seen_seq = adc_seq;
+			seen_tick = now;
+		}
+		else if (now - seen_tick >= ADC_STALL_RECOVER_MS)
+		{	adc_stall_recover();
+			burst = (now - last_stall_tick <= ADC_STALL_BURST_MS) ? (uint8_t)(burst + 1) : 1;
+			last_stall_tick = now;
+			seen_tick = now;   /* 给恢复一个完整的观察窗口 */
+			if (burst >= ADC_STALL_RESET_LIMIT)
+			{
+				NVIC_SystemReset();
+			}
+		}
+	  }
+
 	  static uint16_t last_seq = 0;
 	  if (adc_seq != last_seq)
 	      {
@@ -192,6 +219,14 @@ int main(void)
 	  {
 		  last_lcd_update = HAL_GetTick();
 		  LCD_DrawSkinText(read_g1(), read_g2());
+		  /* 告警标记：状态行右端红块 = 曾发生 ADC/DMA 错误或采集停摆 */
+		  {	static uint8_t last_alarm = 0xFF;
+			uint8_t alarm = (adc_err_cnt || adc_stall_cnt) ? 1 : 0;
+			if (alarm != last_alarm)
+			{	LCD_Rect_Fill(304, LAYOUT_STATUS_Y, 16, 16, alarm ? RED : GRAY);
+				last_alarm = alarm;
+			}
+		  }
 #if ADC_DEBUG_SHOW_RAW
 		  {	char dbg[40];
 			snprintf(dbg, sizeof dbg, "R1=%4u R2=%4u S=%5u E=%3lu",
@@ -273,7 +308,19 @@ static void MX_IWDG_Init(void)
   IWDG->KR  = 0xCCCC;                            /* 启动看门狗（此后不可关闭） */
 }
 
-/* ADC/DMA 错误（overrun、DMA 传输错误等）：计数供诊断，采集继续 */
+/* 采集停摆恢复：重启 ADC+DMA（TIM3 外部触发持续运行，无需重启）。
+ * Stop_DMA 会将句柄状态/错误码复位为 READY，随后校准+重新启动 */
+static void adc_stall_recover(void)
+{
+  HAL_ADC_Stop_DMA(&hadc1);
+  HAL_ADCEx_Calibration_Start(&hadc1);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_dma_buf, ADC_DMA_BUF_LEN);
+  adc_stall_cnt++;
+}
+
+/* ADC/DMA 错误计数。注意：DMA 传输错误(TE)发生时通道已被硬件停转、
+ * HAL 已关闭全部 DMA 中断（HAL_DMA_IRQHandler），采集随之停止——
+ * 本回调只负责计数留痕，实际恢复由主循环采集停摆监测统一执行 */
 void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 {
   if (hadc->Instance == ADC1)

@@ -165,3 +165,38 @@ check("adc=2047.5 -> 5μS", approx(adc_to_g(2047.5), 5.0))
 check("adc=682.5 -> 25μS", approx(adc_to_g(682.5), 25.0))
 
 print("\n" + ("ALL PASS" if ok else "SOME FAILED"))
+
+# ---------- 9. 采集停摆监测状态机（复刻 main.c 主循环逻辑） ----------
+R_MS, B_MS, LIMIT = 300, 10000, 3
+def stall_sim(freeze_ranges, sim_ms=30000):
+    """freeze_ranges: [(起,止)] seq 停止增长的时间段(ms)。返回 (恢复次数, 是否复位)"""
+    seen_seq, seen_tick, last_stall_tick, burst = 0, 0, 0, 0
+    seq, recoveries, reset = 0, 0, False
+    frozen = set()
+    for a, b in freeze_ranges: frozen.update(range(a, b))
+    for now in range(sim_ms):
+        if now not in frozen: seq += 1
+        if seq != seen_seq:
+            seen_seq, seen_tick = seq, now
+        elif now - seen_tick >= R_MS:
+            recoveries += 1
+            burst = burst + 1 if (now - last_stall_tick <= B_MS) else 1
+            last_stall_tick = seen_tick = now
+            if burst >= LIMIT:
+                reset = True; break
+    return recoveries, reset
+
+r, rst = stall_sim([])
+check("无停摆 → 不恢复不复位", r == 0 and not rst)
+r, rst = stall_sim([(1000, 1400)])
+check("单次400ms停摆 → 恢复1次、300ms时触发、不复位", r == 1 and not rst)
+r, rst = stall_sim([(1000, 29999)])
+check("永久停摆 → 连续3次后复位", r == 3 and rst)
+r, rst = stall_sim([(1000, 1400), (25000, 25400)])
+check("两次相隔远的停摆 → 恢复2次不复位（burst窗口外重新计数）", r == 2 and not rst)
+r, rst = stall_sim([(1000, 1400), (3000, 3400)])
+check("两次2s内连发停摆 → 恢复2次不复位（未到上限）", r == 2 and not rst)
+r, rst = stall_sim([(1000, 1400), (3000, 3400), (5000, 5400)])
+check("三次2s间隔连发停摆 → 第3次后复位", r == 3 and rst)
+
+print("\n" + ("ALL PASS" if ok else "SOME FAILED"))
