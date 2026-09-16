@@ -72,10 +72,11 @@ void HAL_MspInit(void)
 
   /* System interrupt init*/
 
-  /** DISABLE: JTAG-DP Disabled and SW-DP Disabled
-  */
-  __HAL_AFIO_REMAP_SWJ_DISABLE();
-
+  /** 保留 SWD/JTAG 调试口（原为 __HAL_AFIO_REMAP_SWJ_DISABLE()，已按需移除）。
+   * 依据：lcd.ioc 的 31 个引脚里没有 PA13/PA14/PA15/PB3/PB4，GPIOB 整个未使用，
+   * 关掉 SWJ 一个引脚都省不出来，代价却是上电后无法 attach 调试器
+   * （只能 connect-under-reset 抢在 HAL_MspInit 之前停一次）。
+   * 若重新生成后又出现 SWJ_DISABLE，删掉那一行即可；tools/verify_logic.py 会报警 */
   /* USER CODE BEGIN MspInit 1 */
 
   /* USER CODE END MspInit 1 */

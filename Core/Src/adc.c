@@ -42,7 +42,11 @@ void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 1 */
 
   /** Common config
-  */
+  *  注意（勿被 CubeMX 覆盖回退）：本工程是 2 通道扫描 + TIM3 外部触发 + DMA 循环，
+  *  下面三项必须保持 ScanConvMode=ENABLE / NbrOfConversion=2，
+  *  以及 MspInit 中 hdma_adc1.Init.Mode=DMA_CIRCULAR。
+  *  曾被 CubeMX 重新生成改成 SCAN_DISABLE/NbrOfConversion=1/DMA_NORMAL，
+  *  导致每次触发只转换 rank1、缓冲区搬 20 次即停转，采集静默 → 停摆监测反复复位。 */
   hadc1.Instance = ADC1;
   hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
@@ -92,9 +96,6 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
     /* ADC1 clock enable */
     __HAL_RCC_ADC1_CLK_ENABLE();
 
-    /* DMA1 clock enable（ADC1 的 DMA 在 DMA1_Channel1，时钟必须先开） */
-    __HAL_RCC_DMA1_CLK_ENABLE();
-
     __HAL_RCC_GPIOC_CLK_ENABLE();
     /**ADC1 GPIO Configuration
     PC0     ------> ADC1_IN10
@@ -105,12 +106,15 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
     /* ADC1 DMA Init */
+    /* ADC1 Init */
     hdma_adc1.Instance = DMA1_Channel1;
     hdma_adc1.Init.Direction = DMA_PERIPH_TO_MEMORY;
     hdma_adc1.Init.PeriphInc = DMA_PINC_DISABLE;
     hdma_adc1.Init.MemInc = DMA_MINC_ENABLE;
     hdma_adc1.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
     hdma_adc1.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+    /* 必须 CIRCULAR：TIM3 以 500Hz 连续触发，缓冲区需自动回绕重填。
+     * NORMAL 模式下搬完 40 半字即停转，采集静默 → 主循环停摆监测会反复复位 */
     hdma_adc1.Init.Mode = DMA_CIRCULAR;
     hdma_adc1.Init.Priority = DMA_PRIORITY_HIGH;
     if (HAL_DMA_Init(&hdma_adc1) != HAL_OK)
@@ -120,13 +124,9 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
 
     __HAL_LINKDMA(adcHandle,DMA_Handle,hdma_adc1);
 
-    /* ADC1 interrupt Init（DMA模式下保留，用于 overrun 等错误处理） */
+    /* ADC1 interrupt Init */
     HAL_NVIC_SetPriority(ADC1_2_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(ADC1_2_IRQn);
-
-    /* DMA1_Channel1 interrupt Init */
-    HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
   /* USER CODE BEGIN ADC1_MspInit 1 */
 
   /* USER CODE END ADC1_MspInit 1 */
@@ -154,14 +154,7 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* adcHandle)
     HAL_DMA_DeInit(adcHandle->DMA_Handle);
 
     /* ADC1 interrupt Deinit */
-  /* USER CODE BEGIN ADC1:ADC1_2_IRQn disable */
-    /**
-    * Uncomment the line below to disable the "ADC1_2_IRQn" interrupt
-    * Be aware, disabling shared interrupt may affect other IPs
-    */
-    /* HAL_NVIC_DisableIRQ(ADC1_2_IRQn); */
-  /* USER CODE END ADC1:ADC1_2_IRQn disable */
-
+    HAL_NVIC_DisableIRQ(ADC1_2_IRQn);
   /* USER CODE BEGIN ADC1_MspDeInit 1 */
 
   /* USER CODE END ADC1_MspDeInit 1 */

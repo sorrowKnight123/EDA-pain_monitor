@@ -1,3 +1,12 @@
 # STM32CubeIDE 构建输出（IDE 构建时自动重新生成）
 Debug/
 Release/
+
+# tools/build_check.ps1 的临时编译/链接产物
+build_check/
+
+# 一次性校验用临时目录
+.verify_tmp/
+
+# 性能对比构建临时目录
+.perf/
