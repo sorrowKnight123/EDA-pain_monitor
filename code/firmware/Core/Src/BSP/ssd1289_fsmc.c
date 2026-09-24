@@ -88,6 +88,11 @@ void LCD_Cn16(uint16_t x, uint16_t y, const uint8_t *glyph32, uint32_t color24)
 	}
 }
 
+/* SSD1289 初始化序列：取自 GitHub 上的开源 LCD 驱动库，按"实机点得亮"原样保留。
+ * 寄存器语义未逐条核实（R10 写 0x0000、R07 分三步穿插的位置都与常见示例序列不同），
+ * 两处 HAL_Delay(10) 等待的对象同样未核实 —— 只把它当"已知可用的一串魔法值"：
+ * 没有实物对比时不要改动顺序、取值或延时。唯一核实过的是 R0x11=0x6838 的 BGR 位
+ * （见文件开头 H24_RGB565 处对 R/B 交换的说明） */
 void LCD_Init(void)
 {
 	LCD_Send_Reg(0x0007, 0x0021);
@@ -117,11 +122,13 @@ typedef struct {
 static WaveBuf wf1, wf2;   /* 电导1（绿）、电导2（蓝） */
 static uint8_t wf_inited = 0;
 
-/* 状态行当前显示的内容：0 = 未麻醉完全，1 = 麻醉完全，0xFF = 该行被别的文字占用
- * （CAL 提示），内容与状态无关，下次刷新必须无条件重绘。
- * LCD_DrawCalText() 负责把它置回 0xFF —— 少了这一步，标定结束后若判出的状态
- * 恰好等于缓存值就会跳过重绘，CAL 提示永久留在屏上（曾出现"一直在校准"） */
-static uint8_t status_anes = 0xFF;
+/* 状态行的两张"账单"，刻意分成两个变量：原先一个变量兼作"状态"与"该行被占用"的三态
+ * （0xFF 哨兵），语义重载导致过"标定结束后 CAL 永久留在屏上"的问题。现在：
+ *   status_shown：该行已画出的状态（0/1）；0xFF = 还没画过任何内容
+ *   status_cal  ：该行当前被 CAL 提示占用 -> 下次刷新必须无条件重绘
+ * 判定本身已移到应用层（main.c 的 anes_state），本文件只负责把给定状态画出来 */
+static uint8_t status_shown = 0xFF;
+static uint8_t status_cal = 0;
 
 /* 文本（GB 码序列，0 结尾；<0x100 为 ASCII 走 XGA 8x16）。
  * 三行标签按屏上顺序放进数组，行号即索引（y 见 ROW_LABEL_Y） */
@@ -338,8 +345,9 @@ static void draw_row_value(uint8_t i, float g, uint32_t color24)
 
 /* 数值刷新（0.5s 一次）：只更新三行数值与底部状态；
  * 标签/分隔线在 LCD_InitLayout 中已画好，无需重绘。
- * G1/G2 由 adc_to_g 出来时已是非负值，故三行数值互相自洽 */
-void LCD_DrawSkinText(float G1, float G2)
+ * G1/G2 由 adc_to_g 出来时已是非负值，故三行数值互相自洽。
+ * anes = 应用层判定好的麻醉状态（0 = 未麻醉完全，1 = 麻醉完全），本文件不做判定 */
+void LCD_DrawSkinText(float G1, float G2, uint8_t anes)
 {
 	float diff = (G1 > G2) ? (G1 - G2) : (G2 - G1);   /* 差值取绝对值 */
 
@@ -347,38 +355,17 @@ void LCD_DrawSkinText(float G1, float G2)
 	draw_row_value(1, G2,   BLUE);
 	draw_row_value(2, diff, WHITE);
 
-	/* 底部状态：相对判据 + 迟滞，仅在状态切换时重绘
-	 *   相对差 = |G1-G2| / max(G1,G2) × 100%
-	 *   占比小说明两部位接近（麻醉分离不明显），占比大说明差异显著
-	 * 相对差用定点放大比较，避免浮点除法：diff × 100 与 mx × 阈值 比较 */
+	/* 底部状态只在"状态变了"或"该行被 CAL 提示占着"时重绘。后者不可省：
+	 * LCD_DrawCalText 占用过该行，而它写的内容与状态无关，若标定结束后判出的状态
+	 * 恰好等于缓存值就会跳过重绘，CAL 提示永久留在屏上（曾出现"一直在校准"） */
+	if (status_cal || anes != status_shown)
 	{
-		float mx = (G1 > G2) ? G1 : G2;
-		float d100 = diff * 100.0f;
-		uint8_t now;
-
-		/* 已是"麻醉完全"时改用退出阈值，其余情况（含首次）用进入阈值 → 构成迟滞。
-		 * mx <= 0 的守卫不可省：两路都在零点上时 0 >= 0 会误判为"麻醉完全" */
-		if (mx <= 0.0f)
-		{
-			now = 0;
-		}
-		else if (status_anes == 1)
-		{
-			now = (d100 <= mx * G_STATE_OFF_PCT) ? 0 : 1;
-		}
-		else
-		{
-			now = (d100 >= mx * G_STATE_ON_PCT) ? 1 : 0;
-		}
-
-		if (now != status_anes)
-		{
-			const uint16_t *msg = (now == 0) ? TEXT_NOT_ANES : TEXT_ANES;
-			uint16_t mx2 = (SCREEN_W - LCD_TextGBWidth(msg)) / 2;
-			LCD_Rect_Fill(0, LAYOUT_STATUS_Y, SCREEN_W, 16, GRAY);
-			LCD_TextGB(mx2, LAYOUT_STATUS_Y, msg, GREEN);
-			status_anes = now;
-		}
+		const uint16_t *msg = (anes == 0) ? TEXT_NOT_ANES : TEXT_ANES;
+		uint16_t mx = (SCREEN_W - LCD_TextGBWidth(msg)) / 2;
+		LCD_Rect_Fill(0, LAYOUT_STATUS_Y, SCREEN_W, 16, GRAY);
+		LCD_TextGB(mx, LAYOUT_STATUS_Y, msg, GREEN);
+		status_shown = anes;
+		status_cal = 0;
 	}
 }
 
@@ -394,15 +381,15 @@ void LCD_DebugLine(const char *text)
  * failed=1 表示最近一个 1s 窗口的均值被标定判据拒绝（量程外/不稳定），
  * 提示转红 —— 用户据此能区分"还在采"和"信号不合格，接了也白等"。
  * 用 ASCII 而非汉字，避免为此往字库里加字形。
- * 必须把状态缓存置为"该行已被占用"：否则标定结束后若状态恰好等于
- * 上电时应有的状态，就会跳过重绘、提示永久留在屏上（曾出现"一直在校准"） */
+ * 必须把该行标记为"被占用"：否则标定结束后若判出的状态恰好等于上电时应有的状态，
+ * 就会跳过重绘、提示永久留在屏上（曾出现"一直在校准"） */
 void LCD_DrawCalText(uint8_t failed)
 {
 	static const uint16_t TEXT_CAL[] = { 'C','A','L','.','.','.', 0 };
 	uint16_t mx = (SCREEN_W - LCD_TextGBWidth(TEXT_CAL)) / 2;
 	LCD_Rect_Fill(0, LAYOUT_STATUS_Y, SCREEN_W, 16, GRAY);
 	LCD_TextGB(mx, LAYOUT_STATUS_Y, TEXT_CAL, failed ? RED : YELLOW);
-	status_anes = 0xFF;
+	status_cal = 1;
 }
 
 /* 双波形实时更新：每个 ADC 采样点推进两路电导曲线 */

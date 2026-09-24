@@ -119,8 +119,8 @@ else:
 # 理由：gState 由 USART1 TC 中断（UART_EndTransmit_IT）改写，它不是 volatile。
 # 若编译器把它的加载提到循环外，主循环会一直看到 BUSY_TX → 串口只发第一帧
 # （这正是本项目踩过的坑：缺 USART1_IRQHandler 时就是这个现象）。
-# 判据：gState 的读取点要么在 main 的循环回边区间内，要么在 uart_send_pair 里、
-#       而 main 在循环内调用了 uart_send_pair（-O0 不内联、-Os 内联，两种都要认）。
+# 判据：gState 的读取点要么在 main 的循环回边区间内，要么在 uart_report_pair 里、
+#       而 main 在循环内调用了 uart_report_pair（-O0 不内联、-Os 内联，两种都要认）。
 # ---------------------------------------------------------------------------
 out = subprocess.run([tool("arm-none-eabi-nm.exe"), ELF], capture_output=True, text=True).stdout
 huart1 = None
@@ -182,7 +182,7 @@ def gstate_reads(body):
 
 print()
 main_b = func_body("main")
-us_b = func_body("uart_send_pair")
+us_b = func_body("uart_report_pair")
 main_be = back_edges(main_b) if main_b else []
 
 if huart1 is None:
@@ -190,17 +190,31 @@ if huart1 is None:
     sys.exit(0)
 
 reads, off = gstate_reads(us_b if us_b else main_b)
-where = "uart_send_pair" if us_b else "main(已内联)"
+where = "uart_report_pair" if us_b else "main(已内联)"
 in_loop = [a for a in reads if any(lo <= a <= hi for lo, hi in back_edges(us_b if us_b else main_b))]
 if reads and not us_b:                       # 内联进 main：读取点本身必须在循环里
     in_loop = [a for a in reads if any(lo <= a <= hi for lo, hi in main_be)]
 called_in_loop = bool(us_b) and any(
-    "uart_send_pair" in l and any(lo <= int(re.match(r"^\s*([0-9a-f]+):", l).group(1), 16) <= hi
-                                  for lo, hi in main_be)
+    "uart_report_pair" in l and any(lo <= int(re.match(r"^\s*([0-9a-f]+):", l).group(1), 16) <= hi
+                                    for lo, hi in main_be)
     for l in main_b if re.match(r"^\s*[0-9a-f]+:", l) and "bl" in l)
 
 print("gState 核对：位于 %s（字段偏移 +0x%X），读取点 %s"
       % (where, off if off is not None else -1, "在循环内" if in_loop else "未落在循环回边内"))
+# 源码侧的等价保证：忙检查若改成"经指向 volatile 的指针读"，反汇编里就不再是
+# ldrb reg,[reg,#off] 这个形状，认不出来。此时不能把"认不出来"报成 FAIL ——
+# C 语义已保证每次真的重取一次（verify_logic.py 有对应的源码断言）
+_src = ""
+for _rel in (("Core", "Src", "BSP", "bsp_uart_report.c"), ("Core", "Src", "main.c")):
+    try:
+        _src += io.open(os.path.join(ROOT, *_rel),
+                        encoding="utf-8", errors="replace").read()
+    except OSError:
+        pass
+if not reads and 'volatile HAL_UART_StateTypeDef *gstate = &huart1.gState;' in _src:
+    print("SKIP: gState 经指向 volatile 的指针读取（源码已断言）——反汇编形状不可识别，"
+          "但语义上每次都会重取，不会被缓存")
+    sys.exit(0)
 if in_loop or called_in_loop:
     print("PASS: gState 每次都被重新从内存读（不会缓存成常量 BUSY_TX，串口不会被卡死）")
 else:

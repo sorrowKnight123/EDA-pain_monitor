@@ -38,12 +38,10 @@
 
 /* 波形绘制区（右上，x:WF_X0..WF_X0+WF_W-1，y:0..WF_H-1；随布局分隔线联动） */
 #define WF_X0   (LAYOUT_SPLIT_X + 1)
-/* 右边界顶到屏幕右缘：原纵轴刻度短线（SCALE_X_TICK 起 3px）与刻度数字所占的那 19 列，
- * 在按需求取消刻度后空了出来，现全部并入波形区当量程用（140 -> 159 列） */
+/* 右边界顶到屏幕右缘（159 列 = 原 140 列 + 取消掉的纵轴刻度线与刻度数字所占 19 列），
+ * 即波形宽度就由本行决定 */
 #define WF_W    (SCREEN_W - WF_X0)
 #define WF_H    LAYOUT_SPLIT_Y
-#define SCALE_X_TICK 301            /* 原纵轴刻度短线起始列（刻度绘制已取消，本宏暂留备用；
-                                       该列现属波形区 WF_X0+140..WF_X0+WF_W-1 范围） */
 #define VAL_W_REF  64               /* 数值列参考宽度（px），仅用于标签水平居中定位。
                                        实测最长输出 5 字符 = 40px（见 LCD_ValStr），
                                        取 64 是为了居中好看并留余量，不是"8 字符"的硬需求 */
@@ -62,14 +60,17 @@ void LCD_Cn16(uint16_t x, uint16_t y, const uint8_t *glyph32, uint32_t color24);
  *   左上 160x180：三行文本（"皮肤电导1/2:"、"电导差值:" 标签固定，仅数值 0.5s 更新，不带单位）
  *   右上 159x180：双波形（绿=电导1，蓝=电导2），纵轴 0..G_RANGE_MAX，无刻度线，
  *                右边界顶到屏幕右缘（原刻度线占用的列已并入）
- *   下方 320x60：麻醉状态（相对差 |G1-G2|/max(G1,G2) 过阈值 + 迟滞，仅状态切换时更新）
+ *   下方 320x60：麻醉状态文字（状态由应用层判定后传入，本文件不做判定；
+ *               见 LCD_DrawSkinText 的 anes 参数）仅状态切换时更新；
  *               标定期间该行显示 "CAL..." 提示，结束后自动恢复状态文字
  *   背景灰色，白线分隔；LCD_InitLayout() 一次性绘制灰底/分隔线/标签；
  *   每个 ADC 采样点调用 LCD_WaveformPush() 推进两路 */
 /* 必须先调用 LCD_InitLayout()：它画好灰底/分隔线/标签，并算出三行数值列的位置，
  * LCD_DrawSkinText 依赖该位置（顺序颠倒会把数值画到 x=0 处） */
 void LCD_InitLayout(void);
-void LCD_DrawSkinText(float G1, float G2);
+/* anes = 应用层已判定好的麻醉状态（0 = 未麻醉完全，1 = 麻醉完全）：判定含迟滞，
+ * 记忆留在应用层（main.c 的 anes_state），本文件只把给定状态画出来 */
+void LCD_DrawSkinText(float G1, float G2, uint8_t anes);
 void LCD_WaveformPush(float G1, float G2);
 void LCD_DebugLine(const char *text);
 /* 上电零点标定期间的状态行提示（此时尚未取得零点，三行数值保持空白）：

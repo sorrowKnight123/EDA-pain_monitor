@@ -14,6 +14,14 @@ CFG    = read_src(os.path.join('Core', 'Inc', 'app_config.h'))
 LCD_H  = read_src(os.path.join('Core', 'Inc', 'BSP', 'ssd1289_fsmc.h'))
 LCD_C  = read_src(os.path.join('Core', 'Src', 'BSP', 'ssd1289_fsmc.c'))
 MAIN_C = read_src(os.path.join('Core', 'Src', 'main.c'))
+ADC_C   = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_adc_acquire.c'))
+CAL_C   = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_adc_cal.c'))
+UART_C  = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_uart_report.c'))
+ANES_C  = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_anes.c'))
+FAULT_C = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_fault.c'))
+FAULT_H = read_src(os.path.join('Core', 'Inc', 'BSP', 'bsp_fault.h'))
+# 拆分后"整份应用源码"：用于"某段代码是否存在"这类断言（不用于切片/顺序断言）
+SRC_ALL = MAIN_C + ADC_C + CAL_C + UART_C + ANES_C + FAULT_C
 CN_H   = read_src(os.path.join('Core', 'Inc', 'BSP', 'cn_font_16.h'))
 HAL_ADC_C = read_src(os.path.join('Drivers', 'STM32F1xx_HAL_Driver', 'Src', 'stm32f1xx_hal_adc.c'))
 HAL_DMA_C = read_src(os.path.join('Drivers', 'STM32F1xx_HAL_Driver', 'Src', 'stm32f1xx_hal_dma.c'))
@@ -25,6 +33,12 @@ def macro(text, name, env=None):
     if not m:
         raise KeyError('未在源码中找到宏 ' + name)
     expr = re.sub(r'\b(\d+(?:\.\d*)?)[fFuUlL]+\b', r'\1', m.group(1).strip())
+    # 本测试用 Python eval 解析这些宏，而 eval 认识 0x/0o 前缀 —— C 里写 10000
+    # 会被当成十六进制（=65536），测试于是在"参数被悄悄改了 6 倍"的假前提上跑，
+    # 报出来的 PASS/FAIL 全是噪声。宁可在这里直接报错，也不要静默算错
+    if re.search(r'\b0[xXoObB][0-9a-fA-F]+', expr):
+        raise ValueError('宏 %s 的值 %r 带进制前缀，eval 会按 Python 规则误读；'
+                         '请改用十进制书写（本工程其余参数均如此）' % (name, expr))
     val = eval(expr, {'__builtins__': {}}, env if env is not None else {})
     return val
 
@@ -45,7 +59,6 @@ VAL_PITCH = layout('LAYOUT_VAL_PITCH', cast=int)
 STATUS_Y = layout('LAYOUT_STATUS_Y', cast=int)
 DEBUG_Y  = layout('LAYOUT_DEBUG_Y', cast=int)
 VAL_W_REF = layout('VAL_W_REF', cast=int)
-SCALE_X_TICK = layout('SCALE_X_TICK', cast=int)
 WF_X0 = layout('WF_X0', cast=int)
 WF_W  = layout('WF_W', cast=int)
 WF_H  = layout('WF_H', cast=int)
@@ -71,8 +84,8 @@ CLAMP_HI = float(_m.group(1))
 print("INFO 从源码读到参数：G_RANGE_MAX=%g 限幅上限=%g ON/OFF=%d%%/%d%% "
       "CAL_ADC=%d..%d CAL_SPREAD_MAX=%d" %
       (G_RANGE_MAX, CLAMP_HI, ON_PCT, OFF_PCT, CAL_ADC_MIN, CAL_ADC_MAX, CAL_SPREAD_MAX))
-print("INFO 布局：屏 %dx%d  波形区 x=%d..%d (宽 %d) y=0..%d  刻度线原起始列=%d"
-      % (SCREEN_W, SCREEN_H, WF_X0, WF_X0 + WF_W - 1, WF_W, WF_H - 1, SCALE_X_TICK))
+print("INFO 布局：屏 %dx%d  波形区 x=%d..%d (宽 %d) y=0..%d"
+      % (SCREEN_W, SCREEN_H, WF_X0, WF_X0 + WF_W - 1, WF_W, WF_H - 1))
 
 def approx(a, b, tol=1e-9): return abs(a - b) < tol
 ok = True
@@ -288,17 +301,11 @@ check("G=G_RANGE_MAX -> y=0（顶部）", map_y(G_RANGE_MAX) == 0)
 check("G=G_RANGE_MAX/2 -> y=%d（中点）" % ((WF_H - 1) // 2), map_y(G_RANGE_MAX / 2) == (WF_H - 1) // 2)
 check("G>G_RANGE_MAX 钳位到 y=0", map_y(G_RANGE_MAX * 2) == 0)
 
-# ---------- 7b. 布局：刻度线删除后腾出的列必须并入波形区 ----------
+# ---------- 7b. 布局：波形区占满"左右分隔线右侧..屏幕右缘" ----------
 check("波形区右边界顶到屏幕右缘（x=%d = SCREEN_W-1）" % (SCREEN_W - 1),
       WF_X0 + WF_W - 1 == SCREEN_W - 1)
 check("波形区左边界紧贴左右分隔线右侧（x=%d）" % (SPLIT_X + 1), WF_X0 == SPLIT_X + 1)
-check("波形区已覆盖原刻度短线起始列 %d（该列现在画波形）" % SCALE_X_TICK,
-      WF_X0 <= SCALE_X_TICK <= WF_X0 + WF_W - 1)
-old_w = SCALE_X_TICK - WF_X0                      # 取消刻度前的宽度
-print("INFO 波形区宽度 %d 列（取消刻度前 %d 列，并入 %d 列）" % (WF_W, old_w, WF_W - old_w))
-check("宽度确实比取消刻度前更宽（确实用上了腾出的空间）", WF_W > old_w)
-check("并入的列数 == 原刻度线区域的列数（%d）" % (SCREEN_W - SCALE_X_TICK),
-      WF_W - old_w == SCREEN_W - SCALE_X_TICK)
+print("INFO 波形区宽度 %d 列（x=%d..%d）" % (WF_W, WF_X0, WF_X0 + WF_W - 1))
 # 波形区不得越过上下分隔线：最后一行 y=WF_H-1 必须正好在分隔线 SPLIT_Y 之上
 check("波形区底边 y=%d 停在分隔线 y=%d 之上" % (WF_H - 1, SPLIT_Y),
       WF_H == SPLIT_Y and WF_H - 1 < SPLIT_Y)
@@ -355,10 +362,10 @@ NOMINAL_HZ = TRIG_HZ / ADC_BLOCK_TRIG          # 额定有效样本率 50Hz
 def stall_sim(freeze_ranges, sim_ms=30000, rate_hz=None):
     """freeze_ranges: [(起,止)] seq 停止增长的时间段(ms)。
        rate_hz: 非停摆期间的实际样本率（Hz，默认额定）。用于模拟"还活着但变慢"。
-       返回 (恢复次数, 是否复位)"""
+       返回 (恢复次数, 是否复位, 复位发生在第几毫秒)"""
     seen_seq, seen_tick, last_stall_tick, burst = 0, 0, 0, 0
-    rate_mark, rate_tick, primed = 0, 0, False
-    seq_f, recoveries, reset = 0.0, 0, False
+    rate_mark, rate_tick, primed, rate_low = 0, 0, False, 0
+    seq_f, recoveries, reset, reset_at = 0.0, 0, False, None
     frozen = set()
     for a, b in freeze_ranges: frozen.update(range(a, b))
     hz = NOMINAL_HZ if rate_hz is None else rate_hz
@@ -368,45 +375,60 @@ def stall_sim(freeze_ranges, sim_ms=30000, rate_hz=None):
         if seq != seen_seq:
             seen_seq, seen_tick = seq, now
 
-        # 判据②：统计窗口内样本数不足
+        # 判据②：统计窗口内样本数不足，且必须"连续两个窗口都偏低"才算（latch 跨恢复保持）
         low = 0
         if not primed:
             primed, rate_tick, rate_mark = True, now, seq
         elif now - rate_tick >= RATE_WIN:
-            low = 1 if (seq - rate_mark) < MIN_N else 0
+            low_now = 1 if (seq - rate_mark) < MIN_N else 0
+            low = low_now & rate_low
+            rate_low = low_now
             rate_tick, rate_mark = now, seq
 
         if (now - seen_tick < R_MS) and not low:
             continue
         recoveries += 1
         burst = burst + 1 if (now - last_stall_tick <= B_MS) else 1
-        # 恢复后两个窗口都重新起算（否则停摆还留在统计窗里，会被重复计一次）
+        # 恢复后两个"时间窗"都重新起算，但 rate_low（连续偏低的证据）不清 ——
+        # 清了就等于每次恢复都把"连续失败"计数归零，持续劣化永远攒不到上限
         last_stall_tick = seen_tick = rate_tick = now
         rate_mark = seq
         if burst >= LIMIT:
-            reset = True; break
-    return recoveries, reset
+            reset, reset_at = True, now
+            break
+    return recoveries, reset, reset_at
 
-r, rst = stall_sim([])
+r, rst, _ = stall_sim([])
 check("无停摆 → 不恢复不复位（样本率判据不误报）", r == 0 and not rst)
-r, rst = stall_sim([(1000, 1400)])
+r, rst, _ = stall_sim([(1000, 1400)])
 check("单次400ms停摆 → 恢复1次、300ms时触发、不复位", r == 1 and not rst)
-r, rst = stall_sim([(1000, 29999)])
+r, rst, _ = stall_sim([(1000, 29999)])
 check("永久停摆 → 连续3次后复位", r == 3 and rst)
-r, rst = stall_sim([(1000, 1400), (25000, 25400)])
+r, rst, _ = stall_sim([(1000, 1400), (25000, 25400)])
 check("两次相隔远的停摆 → 恢复2次不复位（burst窗口外重新计数）", r == 2 and not rst)
-r, rst = stall_sim([(1000, 1400), (3000, 3400)])
+r, rst, _ = stall_sim([(1000, 1400), (3000, 3400)])
 check("两次2s内连发停摆 → 恢复2次不复位（未到上限）", r == 2 and not rst)
-r, rst = stall_sim([(1000, 1400), (3000, 3400), (5000, 5400)])
+r, rst, _ = stall_sim([(1000, 1400), (3000, 3400), (5000, 5400)])
 check("三次2s间隔连发停摆 → 第3次后复位", r == 3 and rst)
 
 # 判据②：DMA TE 后 ADC ERROR_DMA 位没清 → 只剩半区回调 → 额定 50Hz 掉到 25Hz。
 # 这种"还活着但腰斩"必须能被抓到，否则只靠"seq 是否增长"永远发现不了。
-r, rst = stall_sim([], rate_hz=NOMINAL_HZ / 2)
+r, rst, _ = stall_sim([], rate_hz=NOMINAL_HZ / 2)
 print("INFO 半速静默劣化（%.0fHz）：恢复 %d 次、复位=%s" % (NOMINAL_HZ / 2, r, rst))
 check("判据②能抓到半速静默劣化（seq 一直在涨，判据①抓不到）", r > 0)
-r, rst = stall_sim([], rate_hz=NOMINAL_HZ * 0.9)   # 45Hz：正常波动范围，不该误报
+# 关键回归：持续劣化必须靠 burst 兜底走到整机复位。
+# 旧实现每次恢复都把 burst 重置（恢复后每 1s 必再报一次判据②，永远攒不到上限），
+# 设备就以一半采样率无限期跑下去 —— 这条断言就是用来钉死那个行为的
+check("持续半速劣化最终触发整机复位（burst 兜底没被恢复重置掉）", rst)
+r2, rst2, at2 = stall_sim([], rate_hz=NOMINAL_HZ / 2)
+print("INFO 半速劣化复位时刻 ≈ %.1fs（%d 次恢复后）" % (at2 / 1000.0, r2))
+check("半速劣化的复位时刻在合理范围内（%s，不过早也不过晚）" % at2,
+      at2 is not None and 2000 <= at2 <= 8000)
+r, rst, _ = stall_sim([], rate_hz=NOMINAL_HZ * 0.9)   # 45Hz：正常波动范围，不该误报
 check("判据②对轻微掉速（90%%）不误报", r == 0 and not rst)
+# 短暂掉速（只低一个窗口就恢复）不得触发判据②：必须连续两窗
+r, rst, _ = stall_sim([], sim_ms=6000, rate_hz=NOMINAL_HZ * 0.7)   # 35Hz 持续偏低 → 应报
+check("持续 70%% 掉速（35Hz < %d）会被判据②抓到" % MIN_N, r > 0)
 check("判据②阈值留有余量：%d < 额定 %.0f 且 > 半速 %.0f" % (MIN_N, NOMINAL_HZ, NOMINAL_HZ / 2),
       NOMINAL_HZ / 2 < MIN_N < NOMINAL_HZ)
 
@@ -608,10 +630,13 @@ check("旧实现确实会让负值 y 越界（该故障可复现，不是臆测�
 
 # ---------- 14. 状态行缓存与 CAL 提示（现场故障：一直显示 CAL） ----------
 def status_sim(events, invalidate):
-    """复刻 LCD_DrawSkinText 的状态行缓存 + LCD_DrawCalText。
+    """复刻"状态行显示"的行为：bsp_anes.c 的 anes_update（含迟滞记忆 anes_done）
+       + LCD_DrawSkinText（缓存 status_shown；重绘条件 = status_cal || 状态变了）
+       + LCD_DrawCalText（把该行标记为被占用）。与 C 的分工一致：判定在应用层，
+       显示层只决定"该不该重画"。
        events: ('draw', G1, G2) / ('cal',)
-       invalidate=False 复刻旧实现（函数内 static last_anes，CAL 不置失效）
-       invalidate=True  复刻新实现（文件级 status_anes，CAL 置 0xFF）"""
+       invalidate=False 复刻旧实现（CAL 不置失效 → 状态没变就跳过重绘）
+       invalidate=True  复刻现实现（CAL 置 status_cal=1 → 下次无条件重绘）"""
     shown, screen = 0xFF, None
     for ev in events:
         if ev[0] == 'cal':
@@ -724,18 +749,25 @@ check("标定窗口时长 = %d 个样本 / 50Hz = %.1fs" % (CAL_SAMPLES, CAL_SAM
 # ---------- 16. 固定偏移逻辑已彻底移除（源码级核对） ----------
 check("app_config.h 已无 CAL_FIXED_OFFSET / CAL_ENABLE",
       'CAL_FIXED_OFFSET' not in CFG and 'CAL_ENABLE' not in CFG)
-check("main.c 已无 -0.7 固定偏移兜底", 'CAL_FIXED_OFFSET' not in MAIN_C)
-check("main.c 标定失败只置失败标志，不写零点",
-      'cal_fail = 1;' in MAIN_C and 'cal_fail' in MAIN_C)
+check("拆分后的应用源码已无 -0.7 固定偏移兜底", 'CAL_FIXED_OFFSET' not in SRC_ALL)
+check("标定模块（bsp_adc_cal.c）标定失败只置失败标志，不写零点",
+      'cal_fail = 1;' in CAL_C and 'cal_fail' in CAL_C)
 check("状态行提示已接上\"本轮不合格\"标志（红/黄区分）", 'LCD_DrawCalText(cal_fail)' in MAIN_C)
 check("上电不再预画 0.00（已删除 LCD_DrawSkinText(0.0f, 0.0f) 预画）",
-      'LCD_DrawSkinText(0.0f, 0.0f)' not in MAIN_C)
-check("零点初值不再引用固定偏移（仅标定合格后才有效）",
-      'cal_off1 = 0.0f' in MAIN_C and 'cal_off2 = 0.0f' in MAIN_C)
-# 状态行提示接口已改为带参数
+      'LCD_DrawSkinText(0.0f, 0.0f)' not in SRC_ALL)
+check("标定模块（bsp_adc_cal.c）零点初值不再引用固定偏移（仅标定合格后才有效）",
+      'cal_off1 = 0.0f' in CAL_C and 'cal_off2 = 0.0f' in CAL_C)
+# 状态行接口：CAL 提示带 failed 参数；状态文字带"已判定状态"参数（判定已移到 main.c）
 check("LCD_DrawCalText 接口带 failed 参数",
       'void LCD_DrawCalText(uint8_t failed)' in LCD_C and
       'void LCD_DrawCalText(uint8_t failed);' in LCD_H)
+check("麻醉判定在应用层（bsp_anes.c 的 anes_update）：LCD_DrawSkinText 收 anes 入参、显示层不再持有判定与迟滞",
+      'void LCD_DrawSkinText(float G1, float G2, uint8_t anes)' in LCD_C and
+      'void LCD_DrawSkinText(float G1, float G2, uint8_t anes);' in LCD_H and
+      'uint8_t anes_update(float g1, float g2)' in ANES_C and
+      'static uint8_t anes_done' in ANES_C and
+      'G_STATE_ON_PCT' not in LCD_C and 'G_STATE_OFF_PCT' not in LCD_C and
+      'anes_update(g1, g2)' in MAIN_C)
 
 # ---------- 17. DMA TE 后 ADC 错误状态位必须清（半速静默劣化的根因） ----------
 # 前提全部对着 HAL 源码核对，HAL 一升级这里就会报出来
@@ -757,10 +789,10 @@ check("HAL 前提⑥：F1 的 DMA TE 把 hdma->State 置为 READY（→ Stop_DMA
 
 # 我方的修复必须存在
 check("adc_stall_recover 显式清 ADC 错误状态位（修复本体）",
-      'CLEAR_BIT(hadc1.State, HAL_ADC_STATE_ERROR_INTERNAL | HAL_ADC_STATE_ERROR_DMA)' in MAIN_C)
-check("adc_stall_recover 同时清 ErrorCode 字段", 'ADC_CLEAR_ERRORCODE(&hadc1)' in MAIN_C)
+      'CLEAR_BIT(hadc1.State, HAL_ADC_STATE_ERROR_INTERNAL | HAL_ADC_STATE_ERROR_DMA)' in ADC_C)
+check("adc_stall_recover 同时清 ErrorCode 字段", 'ADC_CLEAR_ERRORCODE(&hadc1)' in ADC_C)
 check("历史上那条错误注释（\"由 HAL_ADC_Start_DMA 清错误码\"）已删除",
-      '实际由后续 HAL_ADC_Start_DMA 清错误码' not in MAIN_C)
+      '实际由后续 HAL_ADC_Start_DMA 清错误码' not in SRC_ALL)
 
 # 行为建模：不清 vs 清，完成后回调是否还活着
 ERR_INT, ERR_DMA, READY, REG_BUSY, REG_EOC, REG_OVR, REG_EOSMP = 0x10, 0x40, 0x01, 0x100, 0x200, 0x400, 0x800
@@ -783,7 +815,7 @@ check("行为复现：清了状态位 → 恢复后完成回调恢复可用",
 # ---------- 18. 标定未完成前不得输出无意义数据 ----------
 _i0 = MAIN_C.index('if (adc_seq != last_seq)')          # 主循环里消费样本的分支
 _i1 = MAIN_C.index('LCD_WaveformPush', _i0)             # 注意从 _i0 之后找调用，
-_i2 = MAIN_C.index('uart_send_pair', _i0)               # 否则会先命中函数定义
+_i2 = MAIN_C.index('uart_report_pair', _i0)             # 否则会先命中头文件包含行
 check("波形推进与串口上报都在 `if (cal_done)` 门控之后",
       'if (cal_done)' in MAIN_C[_i0:_i1] and 'if (cal_done)' in MAIN_C[_i0:_i2])
 check("门控理由有注释（零点未标定前 cal_off 还是 0）",
@@ -975,11 +1007,12 @@ check("NaN/inf/-inf 经 clamp 后都能安全转成 uint32",
       and valstr_nan_safe(float('-inf')) == 0)
 
 # d) 文档与代码一致：块判据是"相加"不是"取较大者"（曾把注释和测试一起带偏）
-check("app_config.h 的阈值公式说明是\"相加\"（与 main.c 的 + 一致）",
+check("app_config.h 的阈值公式说明是\"相加\"（与采集模块 bsp_adc_acquire.c 的 + 一致）",
       '是**相加**，不是取较大者' in CFG and 'max(绝对下限' not in CFG)
-check("main.c 的块判据确实用加法", 'ADC_BLOCK_SPREAD_PCT / 100u + ADC_BLOCK_SPREAD_ABS' in MAIN_C)
+check("采集模块（bsp_adc_acquire.c）的块判据确实用加法",
+      'ADC_BLOCK_SPREAD_PCT / 100u + ADC_BLOCK_SPREAD_ABS' in ADC_C)
 check("adc_err_cnt 注释不再宣称能数 overrun（F1 的 ADC 没有 OVR 标志）",
-      '唯一可达路径是 DMA 传输错误' in MAIN_C and 'overrun 等' not in MAIN_C)
+      '唯一可达路径是 DMA 传输错误' in ADC_C and 'overrun 等' not in ADC_C)
 
 # e) CubeMX 回退面：历史上回过退的项必须在 .ioc 里钉死
 check("lcd.ioc 显式钉住 ADC1.ScanConvMode（历史回退项）", 'ADC1.ScanConvMode=ADC_SCAN_ENABLE' in IOC)
@@ -987,6 +1020,178 @@ check("lcd.ioc 显式钉住 USART1.BaudRate（否则重新生成可能静默改�
       'USART1.BaudRate=115200' in IOC)
 check("usart.c 实际波特率与 .ioc 一致", 'huart1.Init.BaudRate = 115200;' in
       read_src(os.path.join('Core', 'Src', 'usart.c')))
+
+# ---------- 23. 串口1 上报链路的生命期监测（与采集链路同等对待） ----------
+# 背景：gState 从 BUSY_TX 回到 READY 只发生在 USART1 的 TC 中断里（一次性状态机 + 无超时）。
+# 任何一条没走到的收尾路径都会让它永久卡死，此后每帧都在忙检查处静默丢弃：
+# 主循环照常喂狗、波形照常滚动、屏幕毫无异常，但串口一个字节都不再输出。
+_uart_send = UART_C[UART_C.index('void uart_report_pair(float g1, float g2)'):
+                    UART_C.index('/* 串口1 上报链路停摆的恢复')]
+_uart_fix  = UART_C[UART_C.index('static void uart_stall_recover'):
+                    UART_C.index('/* 上报链路生命期监测')]
+_monitor   = UART_C[UART_C.index('void uart_lifetime_monitor'):
+                    UART_C.index('void HAL_UART_ErrorCallback')]
+
+UART_STALL_MS = int(macro(CFG, 'UART_STALL_RECOVER_MS'))
+ALARM_WIN_MS  = int(macro(CFG, 'ALARM_WINDOW_MS'))
+
+# a) 心跳必须由"发送真的发起成功"驱动：取了返回值，且只在 HAL_OK 时刷新
+check("uart_report_pair 检查 HAL_UART_Transmit_DMA 的返回值（不再 (void) 丢弃）",
+      'HAL_UART_Transmit_DMA(&huart1, uart_buf, (uint16_t)n) == HAL_OK' in _uart_send)
+check("只有 HAL_OK 才刷新心跳时间戳",
+      _uart_send.index('== HAL_OK') < _uart_send.index('uart_sent_ms = HAL_GetTick()'))
+check("发送前先记录帧长（恢复时要用它补发最后一帧）",
+      'uart_last_len = (uint16_t)n;' in _uart_send)
+check("忙检查仍然保留（不在主循环里等待链路空闲）",
+      '*gstate == HAL_UART_STATE_READY' in _uart_send)
+check("忙检查经指向 volatile 的指针重取（gState 是非 volatile 字段、由 TC 中断改写）",
+      'volatile HAL_UART_StateTypeDef *gstate = &huart1.gState;' in _uart_send)
+
+# b) 恢复动作必须是"复位到确定状态"而不只是"等一等"
+for _what, _pat in [("中止发送（关 DMAT/TCIE、置 gState 回 READY）", 'HAL_UART_AbortTransmit(&huart1)'),
+                    ("兜底复位 DMA 通道寄存器（不信 HAL 状态机）",
+                     'CLEAR_BIT(DMA1_Channel4->CCR, DMA_CCR_EN)'),
+                    ("清 DMA 通道标志", 'DMA1->IFCR = DMA_IFCR_CGIF4'),
+                    ("强制 DMA 句柄回 READY", 'hdma_usart1_tx.State = HAL_DMA_STATE_READY;'),
+                    ("清 UART ErrorCode", 'huart1.ErrorCode = HAL_UART_ERROR_NONE;'),
+                    ("清残留 TCIE（否则 TC 中断会再改一次 gState）",
+                     'CLEAR_BIT(huart1.Instance->CR1, USART_CR1_TCIE);')]:
+    check("恢复序列包含：%s" % _what, _pat in _uart_fix)
+
+# c) 判据与接线
+check("恢复后立刻补发最后一帧，并按返回值刷新心跳（发不出去就不算恢复）",
+      'HAL_UART_Transmit_DMA(&huart1, uart_buf, uart_last_len)' in _uart_fix and
+      'if (tx == HAL_OK) { uart_sent_ms = HAL_GetTick(); }' in _uart_fix)
+check("恢复序列在临界区内完成（TC/DMA 中断不能在复位中途改回状态）",
+      '__disable_irq();' in _uart_fix and '__set_PRIMASK(primask);' in _uart_fix)
+check("检查 gState 与发起发送是原子步（TC 中断可在两者之间抢进主循环）",
+      _uart_send.index('__disable_irq();') < _uart_send.index('*gstate == HAL_UART_STATE_READY')
+      < _uart_send.index('HAL_UART_Transmit_DMA(&huart1, uart_buf, (uint16_t)n)')
+      < _uart_send.index('__set_PRIMASK(primask);'))
+check("临界区用 PRIMASK 保存/恢复（不无脑 __enable_irq，避免嵌套时提前开中断）",
+      '__get_PRIMASK()' in _uart_send and '__get_PRIMASK()' in _uart_fix)
+
+# c) 判据与接线
+check("监测判据：距上次成功发送超过 UART_STALL_RECOVER_MS（%dms）" % UART_STALL_MS,
+      'now - uart_sent_ms < UART_STALL_RECOVER_MS' in _monitor or
+      'HAL_GetTick() - uart_sent_ms < UART_STALL_RECOVER_MS' in _monitor)
+check("标定未完成（uart_sent_ms==0）时不判停摆",
+      'if (uart_sent_ms == 0u) { return; }' in _monitor)
+_loop = MAIN_C[MAIN_C.index('while (1)'):MAIN_C.index('/* USER CODE END WHILE */')]
+check("uart_lifetime_monitor 已在主循环里每轮调用（IWDG 管不到上报链路）",
+      'uart_lifetime_monitor();' in _loop)
+check("首个心跳时间戳初值为 0（0 表示「从未发送」，不是拿 0 当合法时刻）",
+      'static uint32_t uart_sent_ms = 0;' in UART_C)
+check("Recover 阈值远大于单帧时长（最长 12B@115200 ≈ 1.1ms），不会把发送中误判为停摆",
+      UART_STALL_MS >= 50)
+
+# d) HAL 传输错误要留痕，且要区别于"采集错误"
+check("实现了 HAL_UART_ErrorCallback（此前完全缺实现）",
+      'void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)' in UART_C and
+      'uart_err_cnt++' in UART_C)
+
+# ---------- 24. 告警标记的时间窗（现场问题：点亮后永不熄灭） ----------
+# 三个计数器只增不减，直接当判据会让一次上电瞬态永久点亮红块 ——
+# "已恢复的过去"与"正在发生的现在"在屏上无法区分，红块失去告警意义。
+_alarm = MAIN_C[MAIN_C.index('uint8_t alarm ='):MAIN_C.index('LCD_Rect_Fill(SCREEN_W - 16')]
+
+# 只对"仍存在的计数器"断言；adc_stall_cnt / uart_stall_cnt 已删除（信息由 *_ms 时间戳覆盖）
+check("告警判据不再直接读累计计数器",
+      'adc_err_cnt ||' not in _alarm and 'uart_err_cnt ||' not in _alarm and
+      'adc_stall_cnt' not in SRC_ALL and 'uart_stall_cnt' not in SRC_ALL)
+for _mk, _nm in [('adc_err_ms', 'ADC/DMA 错误'), ('adc_stall_ms', '采集停摆'),
+                 ('uart_stall_ms', '上报停摆'), ('adc_spike_ms', '抗扰块剔除'),
+                 ('adc_drop_ms', '消费端丢样本')]:
+    check("告警窗口覆盖：%s（%s）" % (_mk, _nm), 'mark_alive(&%s)' % _mk in _alarm)
+# 末两项是数据质量而非链路故障：受扰块被剔除时显示值保持原值（曲线看着"很稳"）、
+# 丢样本时波形时基悄悄压缩。共用同一个红块 —— 分开显示要再加一套 UI 与布局宏，不值当
+check("五个判据都走 mark_alive（若退回「距今<窗口」的写法，0 会被算成刚发生 → 上电常亮）",
+      'mark_elapsed' not in SRC_ALL and _alarm.count('mark_alive') == 5)
+check("bsp_fault.c 的 mark_alive 把时间戳换算成「窗口到期时刻」再比，0（从未发生）恒不亮",
+      'HAL_GetTick() - (*stamp + ALARM_WINDOW_MS) < 0x80000000u' in FAULT_C)
+check("每个故障标记都有写入点（否则 mark_alive 恒为 0 → 红块永不亮，等于没接上）",
+      all(re.search(r'\b%s\s*=\s*(HAL_GetTick\(\)|now);' % m, SRC_ALL)
+          for m in ('adc_err_ms', 'adc_stall_ms', 'uart_stall_ms',
+                    'adc_spike_ms', 'adc_drop_ms')))
+check("uart_stall_ms 用关中断前取到的 now（临界区内 SysTick 被挡，HAL_GetTick 会返回冻结值）",
+      'uint32_t primask, now = HAL_GetTick();' in UART_C and
+      'uart_stall_ms = now;' in UART_C)
+check("标记在 bsp_fault.h 声明，写它的模块都 include 了该头",
+      'volatile uint32_t adc_err_ms' in FAULT_H and
+      'volatile uint32_t adc_spike_ms' in FAULT_H and
+      'bsp_fault.h' in ADC_C and 'bsp_fault.h' in UART_C)
+check("标记都声明为 volatile（在中断里写、主循环里读）",
+      all(('volatile uint32_t %s' % m) in FAULT_H
+          for m in ('adc_err_ms', 'adc_stall_ms', 'uart_stall_ms', 'adc_spike_ms', 'adc_drop_ms')))
+
+# 行为建模：窗口内亮、窗口外灭。必须复刻 C 的 mark_alive 语义（比较"窗口到期时刻"
+# 而不是"距今多久"）：0 = 从未发生 → 恒不亮；写成"距今<窗口"会让 0-0=0 被算成
+# "刚刚发生"，上电头几毫秒误亮一次，反而与要修的现象同形。
+# C 里 now、stamp、stamp+win 全是 uint32，减法按模 2^32 进行 —— Python 必须显式取模。
+# 这里用等价的"已过去时长"形式：elapsed = (now - stamp) mod 2^32，
+# 判据为 elapsed < win（注意不是 win <= elapsed —— 反了会让"刚发生"判成不亮、
+# "早就过去"判成亮，正好把语义整个颠倒过来）
+def alarm(now, err=None, stall=None, uart=None, win=ALARM_WIN_MS):
+    M32 = 0xFFFFFFFF
+    def alive(t):
+        if t is None or t == 0:
+            return False
+        elapsed = (now - t) % (M32 + 1)
+        return elapsed < win
+    return 1 if (alive(err) or alive(stall) or alive(uart)) else 0
+check("无故障 → 不亮", alarm(5000) == 0)
+check("时间戳为 0（从未发生）→ 不亮，且 now 很大时也不亮", alarm(99999) == 0)
+check("上电最初几毫秒（now 很小、时间戳仍为 0）→ 不亮（旧写法会在这里误亮）",
+      alarm(0) == 0 and alarm(1) == 0)
+check("故障刚发生 → 亮", alarm(1000, err=1000) == 1)
+check("故障在窗口内 → 亮", alarm(1000 + ALARM_WIN_MS - 1, err=1000) == 1)
+# 到期边界：elapsed 恰为 win 时窗口关闭（两个写法在这一点上的取值正好互换，
+# 所以这条断言是"方向写反"的探针）
+check("故障恰好到窗口边界 → 熄灭；再早 1ms 仍亮",
+      alarm(1000 + ALARM_WIN_MS, err=1000) == 0 and
+      alarm(1000 + ALARM_WIN_MS - 1, err=1000) == 1)
+check("故障出窗口 → 熄灭（旧实现此时仍然常亮，这就是本次修复点）",
+      alarm(1000 + ALARM_WIN_MS + 1, err=1000) == 0 and alarm(99999, err=1000) == 0)
+check("故障持续（每次恢复刷新时间戳）→ 持续亮", alarm(9000, stall=8500) == 1 and
+      alarm(12000, stall=11500) == 1)
+check("HAL_GetTick 回绕后仍判断正确（无符号比较）",
+      alarm(1 << 10, err=((1 << 10) - 100) % (1 << 32), win=10000) == 1 and
+      alarm(1 << 10, err=((1 << 10) - 100000) % (1 << 32), win=10000) == 0)
+r, rst, _ = stall_sim([(1000, 1400)])       # 一次已成功恢复的停摆
+check("一次已恢复的停摆不再让告警永久常亮（%dms 后熄灭）" % ALARM_WIN_MS,
+      alarm(1400 + ALARM_WIN_MS, stall=1400) == 0 and alarm(1200, stall=1000) == 1)
+
+# ---------- 25. 串口1 DMA 发送的规范性核对 ----------
+USART_C = read_src(os.path.join('Core', 'Src', 'usart.c'))
+IOC_DMA = dict(re.findall(r'^Dma\.USART1_TX\.0\.(\w+)=(.*)$', IOC, re.M))
+check("lcd.ioc 里确实登记了 USART1_TX 的 DMA 请求（Dma.Request1）",
+      'Dma.Request1=USART1_TX' in IOC and 'Dma.RequestsNb=2' in IOC)
+check("lcd.ioc 的 DMA 通道与代码一致（DMA1_Channel4）",
+      IOC_DMA.get('Instance') == 'DMA1_Channel4' and
+      'hdma_usart1_tx.Instance = DMA1_Channel4;' in USART_C)
+check("lcd.ioc 的 DMA 方向/字长/模式与代码一致（MEMORY_TO_PERIPH / BYTE / NORMAL）",
+      IOC_DMA.get('Direction') == 'DMA_MEMORY_TO_PERIPH' and
+      IOC_DMA.get('Mode') == 'DMA_NORMAL' and
+      IOC_DMA.get('PeriphDataAlignment') == 'DMA_PDATAALIGN_BYTE' and
+      IOC_DMA.get('MemDataAlignment') == 'DMA_MDATAALIGN_BYTE' and
+      'hdma_usart1_tx.Init.Mode = DMA_NORMAL;' in USART_C)
+check("lcd.ioc 登记了 DMA1_Channel4 的 NVIC 使能",
+      r'NVIC.DMA1_Channel4_IRQn=true' in IOC)
+check("代码里也确实使能了 DMA1_Channel4_IRQn",
+      'HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn)' in read_src(
+          os.path.join('Core', 'Src', 'dma.c')))
+check("USART1_IRQn 已使能且优先级低于 DMA（TC 收尾不能抢占 DMA 完成回调）",
+      'NVIC.USART1_IRQn=true\\:1\\:0' in IOC and
+      'HAL_NVIC_SetPriority(USART1_IRQn, 1, 0)' in USART_C)
+check("NVIC 分组与 HAL_Init 的 NVIC_PRIORITYGROUP_4 一致",
+      'NVIC.PriorityGroup=NVIC_PRIORITYGROUP_4' in IOC)
+# LED/调试口不被 DMA 配置挤占：确认 USART1 的两个 DMA 请求没有和 ADC 抢通道
+_ioc_ch = re.findall(r'^Dma\.\w+\.0\.Instance=(DMA1_Channel\d+)$', IOC, re.M)
+check("ADC 与 USART1_TX 用的是不同 DMA 通道（%s）" % _ioc_ch,
+      len(_ioc_ch) == 2 and len(set(_ioc_ch)) == 2)
+check("PINC/DINC 与字节宽度匹配（单字节搬运，不需要 MemInc=DISABLE 之类特殊配置）",
+      IOC_DMA.get('PeriphInc') == 'DMA_PINC_DISABLE' and
+      IOC_DMA.get('MemInc') == 'DMA_MINC_ENABLE')
 
 print("\n" + ("ALL PASS" if ok else "SOME FAILED"))
 
