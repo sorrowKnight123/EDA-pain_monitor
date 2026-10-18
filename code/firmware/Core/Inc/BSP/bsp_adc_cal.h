@@ -31,12 +31,6 @@ void adc_cal_task(void);
  * 而"两处字面一致"是本工程的承诺。零点未标定（cal_done=0）时输出无意义，由调用方门控 */
 void adc_read_g_pair(float *g1, float *g2);
 
-/* 单通道电导，供 500ms 文本/判定路径使用（这两处不要求两路同刻，各读各的即可）。
- * 输出 = (当前电导 - 本通道零点) × 30，低于本通道零点（负电导）在模块内统一截零：
- * 屏上三行、差值、状态判定、波形、串口全部取自这里，截零后各处必然自洽 */
-float read_g1(void);
-float read_g2(void);
-
 #ifdef __cplusplus
 }
 #endif

@@ -9,8 +9,7 @@
 #include "stm32f1xx_hal_rcc.h"
 #include "stm32f1xx_ll_fsmc.h"
 
-#include <stdlib.h>
-#include <string.h>
+#include <stddef.h>
 
 #define CMD  (*(volatile uint16_t *)0x6C000000)   // RS=0，写命令
 #define DAT  (*(volatile uint16_t *)0x6C000002)   // RS=1，写/读数据

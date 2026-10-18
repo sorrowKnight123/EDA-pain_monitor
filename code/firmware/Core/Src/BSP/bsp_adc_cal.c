@@ -32,9 +32,6 @@ static float adc_to_g(uint16_t adc, float off)
   return (g > 0.0f) ? g : 0.0f;   /* 顺带挡住 NaN：与 0 比较为假时归零 */
 }
 
-float read_g1(void) { return adc_to_g(adc_value1, cal_off1); }
-float read_g2(void) { return adc_to_g(adc_value2, cal_off2); }
-
 void adc_read_g_pair(float *g1, float *g2)
 {
   /* 本样本的两路码值只读一次，波形与串口共用同一份：adc_value1/2 由半区中断逐个改写，

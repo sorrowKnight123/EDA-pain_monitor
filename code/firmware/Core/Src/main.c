@@ -186,10 +186,11 @@ int main(void)
 		  }
 		  else
 		  {
-			  /* 判定与显示用同一份数值：两路各读一次进局部量，免得"状态按 A 判、
+			  /* 判定与显示用同一份数值：两路取自同一关中断快照（与波形/串口同一路径），免得"状态按 A 判、
 			   * 数值显示 B"；anes_update 内部持有迟滞记忆，返回值就是要显示的状态。
 			   * 标定合格后的首次调用会覆盖掉 CAL 提示（见 status_cal） */
-			  float g1 = read_g1(), g2 = read_g2();
+			  float g1, g2;
+			  adc_read_g_pair(&g1, &g2);
 			  LCD_DrawSkinText(g1, g2, anes_update(g1, g2));
 		  }
 		  /* 告警标记：状态行右端红块 = 时间窗内发生过 ADC/DMA 错误、采集停摆、上报停摆、
