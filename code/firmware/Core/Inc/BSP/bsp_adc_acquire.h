@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    bsp_adc_acquire.h
-  * @brief   ADC 采集链路：DMA 循环缓冲、块内抽取、滑动平均、停摆监测与恢复
+  * @brief   ADC 采集链路：DMA 循环缓冲、块内抽取、Butterworth 低通、停摆监测与恢复
   ******************************************************************************
   */
 #ifndef __BSP_ADC_ACQUIRE_H__
@@ -18,6 +18,10 @@ extern "C" {
 extern volatile uint16_t adc_value1;   /* 滤波后的电导1有效样本（PC1） */
 extern volatile uint16_t adc_value2;   /* 滤波后的电导2有效样本（PC0） */
 extern volatile uint16_t adc_seq;      /* 有效样本计数（回绕安全） */
+/* 最近一个有效样本的质量：1 = 两路都通过块内判据，0 = 至少一路被剔除。
+ * 为 0 时 adc_value1/2 仍是上一块的旧值（时基不冻结），消费端必须据此
+ * 在波形上留缺口、在 CSV 里写 Q=0，不能把它当成新样本 */
+extern volatile uint8_t  adc_last_valid;
 
 /* 启动采集链路：校准 ADC（F1 必要，减小偏移温漂）→ 以 DMA 循环模式启动 →
  * 打开 TIM3 触发源。上电时调用一次；这里的校准/启动失败不单独报错，

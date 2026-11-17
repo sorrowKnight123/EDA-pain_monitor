@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # 仿真验证 lcd 工程 ADC/滤波/波形绘制的 C 逻辑（逐条复刻 C 实现）
 
-import os, re
+import os, re, math
 
 # ---------- 参数：直接从源码读取，避免测试与实现脱节 ----------
 # （曾经把 G_RANGE_MAX 写死成 200.0、限幅上限写死成 999.99，实现改了测试却照样 PASS）
@@ -16,7 +16,12 @@ LCD_C  = read_src(os.path.join('Core', 'Src', 'BSP', 'ssd1289_fsmc.c'))
 MAIN_C = read_src(os.path.join('Core', 'Src', 'main.c'))
 ADC_C   = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_adc_acquire.c'))
 CAL_C   = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_adc_cal.c'))
+CAL_H   = read_src(os.path.join('Core', 'Inc', 'BSP', 'bsp_adc_cal.h'))
 ANES_C  = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_anes.c'))
+ANES_H  = read_src(os.path.join('Core', 'Inc', 'BSP', 'bsp_anes.h'))
+SDLOG_C = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_sdlog.c'))
+SDLOG_H = read_src(os.path.join('Core', 'Inc', 'BSP', 'bsp_sdlog.h'))
+ACQ_H   = read_src(os.path.join('Core', 'Inc', 'BSP', 'bsp_adc_acquire.h'))
 FAULT_C = read_src(os.path.join('Core', 'Src', 'BSP', 'bsp_fault.c'))
 FAULT_H = read_src(os.path.join('Core', 'Inc', 'BSP', 'bsp_fault.h'))
 # 拆分后"整份应用源码"：用于"某段代码是否存在"这类断言（不用于切片/顺序断言）
@@ -66,7 +71,6 @@ PSC, ARR = 71, 1999
 TRIG_HZ = SYSCLK / (PSC + 1) / (ARR + 1)          # 期望 500Hz
 ADC_BLOCK_TRIG = int(macro(CFG, 'ADC_BLOCK_TRIG'))
 ADC_DMA_BUF_LEN = 4 * ADC_BLOCK_TRIG              # 40 半字
-FILT_N = int(macro(CFG, 'FILT_N'))
 G_RANGE_MAX = macro(CFG, 'G_RANGE_MAX')
 ON_PCT  = int(macro(CFG, 'G_STATE_ON_PCT'))
 OFF_PCT = int(macro(CFG, 'G_STATE_OFF_PCT'))
@@ -96,35 +100,64 @@ def check(name, cond):
 check("TIM3 trigger = 500Hz", approx(TRIG_HZ, 500.0))
 check("有效输出率 = 50Hz（每块10次触发=20ms）", approx(1.0 / (ADC_BLOCK_TRIG / TRIG_HZ), 50.0))
 
-# ---------- 2. gfilter（复刻 main.c 整数滑动平均） ----------
+# ---------- 2. 有效样本滤波（复刻 bsp_adc_acquire.c 的 gfilter） ----------
+# 4 阶 Butterworth 低通，两节双二次（DF2T）。系数直接取自源码：改了系数
+# 测试跟着变；同时反算频响，防止"系数写错了但实现与测试自洽"这种更糟的情况
+BQ = []
+for _s in (1, 2):
+    BQ.append((float(macro(ADC_C, 'BQ%d_B0' % _s)), float(macro(ADC_C, 'BQ%d_B1' % _s)),
+               float(macro(ADC_C, 'BQ%d_B2' % _s)), float(macro(ADC_C, 'BQ%d_A1' % _s)),
+               float(macro(ADC_C, 'BQ%d_A2' % _s))))
+
 class GFilter:
     def __init__(self):
-        self.buf = [0] * FILT_N
-        self.sum = 0
-        self.idx = 0
-        self.cnt = 0
+        self.s = [[0.0, 0.0], [0.0, 0.0]]   # 两节各 (s1, s2)
+        self.primed = False
+
 def gfilter(f, raw):
-    f.sum -= f.buf[f.idx]
-    f.buf[f.idx] = raw
-    f.sum += raw
-    f.idx = (f.idx + 1) % FILT_N
-    if f.cnt < FILT_N: f.cnt += 1
-    return f.sum // f.cnt
+    x = float(raw)
+    if not f.primed:
+        # 首样本预置为稳态，与 C 端一致（否则从 0 起步要 160ms 才追上）
+        f.primed = True
+        f.s[0][0] = x * (1.0 - BQ[0][0])
+        f.s[0][1] = x * (1.0 - BQ[0][0] - BQ[0][1] + BQ[0][3])
+        f.s[1][0] = x * (1.0 - BQ[1][0])
+        f.s[1][1] = x * (1.0 - BQ[1][0] - BQ[1][1] + BQ[1][3])
+        return raw
+    y = x
+    for i in (0, 1):
+        b0, b1, b2, a1, a2 = BQ[i]
+        yn = b0 * y + f.s[i][0]
+        f.s[i][0] = b1 * y - a1 * yn + f.s[i][1]
+        f.s[i][1] = b2 * y - a2 * yn
+        y = yn
+    y = 0.0 if not (y > 0.0) else (4095.0 if y > 4095.0 else y)   # 同 C 的夹紧+挡 NaN
+    return int(y + 0.5)
 
-# 对照：朴素的 cnt 窗口平均
-class Naive:
-    def __init__(self): self.hist = []
-def naive(n_obj, raw):
-    n_obj.hist.append(raw)
-    if len(n_obj.hist) > FILT_N: n_obj.hist.pop(0)
-    return sum(n_obj.hist) // len(n_obj.hist)
+import cmath
+def _H(freq):
+    z = cmath.exp(-1j * 2 * math.pi * freq / 50.0)
+    h = 1 + 0j
+    for (b0, b1, b2, a1, a2) in BQ:
+        h *= (b0 + b1 * z + b2 * z * z) / (1 + a1 * z + a2 * z * z)
+    return h
 
-f, n = GFilter(), Naive()
-seq = [100, 120, 90, 4000, 800, 1200, 1000, 1100, 1050, 1000, 1000, 1000]
-all_match = all(gfilter(f, x) == naive(n, x) for x in seq)
-check("gfilter 与朴素滑动平均逐点一致", all_match)
-# 窗口满后 O(1) 版本应正确遗忘最老样本
-check("gfilter 满窗后遗忘最老样本", f.buf[f.idx % FILT_N] == seq[len(seq) - FILT_N])
+check("IIR 直流增益 = 1（标定量程不被滤波器缩放）", abs(abs(_H(0.0)) - 1.0) < 1e-6)
+check("IIR -3dB 点落在 3Hz（EDA 领域标准截止频率）",
+      abs(_H(3.0)) ** 2 <= 0.5 + 1e-3 and abs(_H(2.0)) ** 2 > 0.5)
+check("IIR 5Hz 抑制 < -15dB（矩形窗只有 -12.6dB）",
+      20 * math.log10(abs(_H(5.0))) < -15)
+check("IIR 10Hz 抑制 < -40dB（矩形窗只有 -14.4dB）",
+      20 * math.log10(abs(_H(10.0))) < -40)
+
+_f = GFilter()
+for _ in range(200):          # 稳态 1000
+    gfilter(_f, 1000)
+_y = [gfilter(_f, 3000) for _ in range(200)]
+check("IIR 阶跃后收敛到输入值（无稳态误差）", abs(_y[-1] - 3000) <= 1)
+check("IIR 阶跃过冲 < 15%（实测约 11%）", (max(_y) - 3000) / 2000.0 < 0.15)
+
+print("INFO 有效样本滤波 = 4 阶 Butterworth 低通 3Hz")
 
 # ---------- 3. adc_block_reduce（复刻去极值均值） ----------
 def adc_block_reduce(p):        # p: 长度 2*ADC_BLOCK_TRIG 的半区，偶=ch1, 奇=ch2
@@ -248,9 +281,11 @@ for _ in range(5):      # 跨回绕：65535 -> 0 -> 1 -> 2 -> 3
         last = s; consumed += 1
 check("adc_seq uint16 回绕时消费不卡死", consumed == 5)
 
-# 端到端延迟估算：10ms 块均 + 8点MA群延迟 (8-1)/2*20ms
-lat = 20 / 2 + (FILT_N - 1) / 2 * 20
-print(f"INFO 端到端滤波群延迟 ≈ {lat:.0f}ms（原 16 点浮点滤波为 {(16-1)/2*20:.0f}ms）")
+# 端到端延迟估算：10ms 块均 + 4 阶 BW 在 0.5Hz 的群延迟
+_d = 0.01
+_gd = -(cmath.phase(_H(0.5 + _d)) - cmath.phase(_H(0.5 - _d))) / (2 * _d * 2 * math.pi)
+lat = 20 / 2 + _gd * 1000
+print("INFO 端到端群延迟 ≈ %.0fms（10ms 块均 + 4 阶 BW 在 0.5Hz 的群延迟）" % lat)
 
 # ---------- 6. 波形绘制像素一致性：旧3次Rect_Fill vs 新 wave_draw_col ----------
 GRAY, GREEN, BLUE = "GRAY", "GREEN", "BLUE"
@@ -722,9 +757,9 @@ check("麻醉判定在应用层（bsp_anes.c 的 anes_update）：LCD_DrawSkinTe
       'void LCD_DrawSkinText(float G1, float G2, uint8_t anes)' in LCD_C and
       'void LCD_DrawSkinText(float G1, float G2, uint8_t anes);' in LCD_H and
       'uint8_t anes_update(float g1, float g2)' in ANES_C and
-      'static uint8_t anes_done' in ANES_C and
+      'static uint8_t  anes_done' in ANES_C and
       'G_STATE_ON_PCT' not in LCD_C and 'G_STATE_OFF_PCT' not in LCD_C and
-      'anes_update(g1, g2)' in MAIN_C)
+      'anes_update(s.g1, s.g2)' in MAIN_C)
 
 # ---------- 17. DMA TE 后 ADC 错误状态位必须清（半速静默劣化的根因） ----------
 # 前提全部对着 HAL 源码核对，HAL 一升级这里就会报出来
@@ -781,9 +816,47 @@ check("门控理由有注释（零点未标定前 cal_off 还是 0）",
 # ---------- 19. 调参自检与布局/字库一致性 ----------
 check("ADC_BLOCK_TRIG=%d 去极值后仍有 %d 个样本可平均（除数非 0）" % (ADC_BLOCK_TRIG, ADC_BLOCK_TRIG - 2),
       ADC_BLOCK_TRIG - 2 >= 1)
-check("FILT_N=%d >= 1（取模/除数非 0）" % FILT_N, FILT_N >= 1)
 check("app_config.h 内置编译期自检（改坏了直接编译报错，不会留到运行期除零）",
-      '#if (ADC_BLOCK_TRIG < 4)' in CFG and '#if (FILT_N < 1)' in CFG)
+      '#if (ADC_BLOCK_TRIG < 4)' in CFG)
+
+# ---------- 19b. 数据完整性：质量位 / 原始值入档 / 基线重锚 / 时间确认 ----------
+# CSV 表头与行格式必须同列数，否则事后按列名取数会整体错位
+_csv_cols = re.search(r'"# (t_ms,[a-z0-9,]+)\\r\\n"', SDLOG_C)
+check("CSV 表头列定义存在", _csv_cols is not None)
+_cols = _csv_cols.group(1).split(',') if _csv_cols else []
+check("CSV 9 列：t_ms,raw1,raw2,off1,off2,g1,g2,diff,q",
+      _cols == ['t_ms', 'raw1', 'raw2', 'off1', 'off2', 'g1', 'g2', 'diff', 'q'])
+_linefmt = re.search(r'snprintf\(line, sizeof line, "([^"]+)"', SDLOG_C)
+check("CSV 行格式串的字段数 = 表头列数",
+      _linefmt is not None and _linefmt.group(1).count(',') == len(_cols) - 1)
+check("CSV 写出真实质量位（不是常量 1）", '(unsigned)s->valid' in SDLOG_C)
+check("CSV 每行记录原始电导与零点（事后可完整重算）",
+      's->r1' in SDLOG_C and 's->r2' in SDLOG_C and 's->off1' in SDLOG_C)
+
+# 行缓冲必须装得下最坏一行：9 个字段，数值各最多 9 字符（fmt_f3 限幅 99999.999）
+_line_buf = int(re.search(r'char line\[(\d+)\]', SDLOG_C).group(1))
+_worst = len('4294967295') + 8 + 7 * len('99999.999') + 1 + 2
+check("CSV 行缓冲 %d 字节 > 理论最坏一行 %d 字节" % (_line_buf, _worst), _line_buf > _worst)
+
+check("采集侧在两路判据之后写 adc_last_valid", 'adc_last_valid = valid;' in ADC_C)
+check("质量位随快照传到消费端", 'adc_last_valid' in ACQ_H and 'v  = adc_last_valid' in CAL_C)
+check("波形推进接收质量位", 'LCD_WaveformPush(float G1, float G2, uint8_t valid)' in LCD_C)
+check("被剔除的列擦成灰底而不是留着旧轨迹",
+      'else if (wf1.drawn_a[i] != 0xFF)' in LCD_C and 'else if (wf2.drawn_a[i] != 0xFF)' in LCD_C)
+
+check("麻醉判定要求越阈持续够久（进入/退出各一个计时器）",
+      'G_STATE_ON_HOLD_MS' in ANES_C and 'G_STATE_OFF_HOLD_MS' in ANES_C)
+check("两路都贴近零点时不做判定（分母趋 0 时相对差失去意义）",
+      'mx < G_STATE_IDLE_UNITS' in ANES_C)
+_idle_reset = re.search(r'G_STATE_IDLE_MS\)\s*\{(.{0,200})', ANES_C, re.S)
+check("无信号超时后复位全部记忆",
+      _idle_reset is not None and 'anes_done' in _idle_reset.group(1)
+      and 'on_active' in _idle_reset.group(1))
+
+check("零点锁定后不再更新（标定任务在 cal_done 后直接返回，不做自动重锚）",
+      'if (cal_done || adc_seq == seen) { return; }' in CAL_C)
+check("零点仍然两路同步取得（差值判据要求两个零点同刻）",
+      'cal_off1 = adc_g_raw(z1);' in CAL_C and 'cal_off2 = adc_g_raw(z2);' in CAL_C)
 
 # 三行标签宽度 + 数值列必须放得进左栏（否则定位算成负数、开窗坐标错乱）
 for _nm, _body in re.findall(r'LABEL_(\w+)\[\]\s*=\s*\{([^}]*)\}', LCD_C):

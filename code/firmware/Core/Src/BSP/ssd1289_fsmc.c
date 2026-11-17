@@ -243,8 +243,11 @@ static void wave_draw_col(uint16_t x, uint8_t lo, uint8_t hi,
 	}
 }
 
-/* 双波形差分推进：任一轨迹在某列区间变化时，整列一次开窗重写（灰底+两曲线） */
-static void wave_push_pair(float G1, float G2)
+/* 双波形差分推进：任一轨迹在某列区间变化时，整列一次开窗重写（灰底+两曲线）。
+ * valid=0 表示本样本是被剔除的受扰块：末列不落点，并把该列原有轨迹擦成灰底 ——
+ * 屏上出现一个可见缺口。若照旧把上一块的旧值再画一遍，波形看起来"很稳"，
+ * 而实际上这段时间什么都没有测到 */
+static void wave_push_pair(float G1, float G2, uint8_t valid)
 {
 	uint8_t new_y1[WF_W], new_y2[WF_W];
 	uint8_t ny1, ny2;
@@ -265,8 +268,8 @@ static void wave_push_pair(float G1, float G2)
 		new_y1[i] = wf1.old_y[i + 1];
 		new_y2[i] = wf2.old_y[i + 1];
 	}
-	new_y1[WF_W - 1] = ny1;
-	new_y2[WF_W - 1] = ny2;
+	new_y1[WF_W - 1] = valid ? ny1 : 0xFF;
+	new_y2[WF_W - 1] = valid ? ny2 : 0xFF;
 
 	for (i = 0; i < WF_W; i++)
 	{
@@ -285,12 +288,23 @@ static void wave_push_pair(float G1, float G2)
 			da1 = wf1.drawn_a[i]; db1 = wf1.drawn_b[i];
 			if (da1 != a1 || db1 != b1) changed = 1;
 		}
+		else if (wf1.drawn_a[i] != 0xFF)
+		{
+			/* 本列从"有轨迹"变成"无样本"：把旧区间取出来当重写范围，下面画成灰底 */
+			da1 = wf1.drawn_a[i]; db1 = wf1.drawn_b[i];
+			changed = 1;
+		}
 		if (yy2 != 0xFF)
 		{
 			uint8_t yn = (i < WF_W - 1) ? new_y2[i + 1] : yy2;
 			wave_span(yy2, yn, &a2, &b2);
 			da2 = wf2.drawn_a[i]; db2 = wf2.drawn_b[i];
 			if (da2 != a2 || db2 != b2) changed = 1;
+		}
+		else if (wf2.drawn_a[i] != 0xFF)
+		{
+			da2 = wf2.drawn_a[i]; db2 = wf2.drawn_b[i];
+			changed = 1;
 		}
 
 		if (changed)
@@ -401,8 +415,9 @@ void LCD_DrawRecFlag(uint8_t on)
 	}
 }
 
-/* 双波形实时更新：每个 ADC 采样点推进两路电导曲线 */
-void LCD_WaveformPush(float G1, float G2)
+/* 双波形实时更新：每个 ADC 采样点推进两路电导曲线。
+ * valid=0 时只推进时基、不落点，该列留空（见 wave_push_pair） */
+void LCD_WaveformPush(float G1, float G2, uint8_t valid)
 {
 	int i;
 
@@ -416,5 +431,5 @@ void LCD_WaveformPush(float G1, float G2)
 		wf_inited = 1;
 	}
 
-	wave_push_pair(G1, G2);
+	wave_push_pair(G1, G2, valid);
 }

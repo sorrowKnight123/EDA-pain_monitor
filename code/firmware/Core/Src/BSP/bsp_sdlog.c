@@ -4,7 +4,7 @@
   * @brief   SD 卡 CSV 数据记录：双阈值触发 + 环形队列 + 批量落盘
   *
   * 数据流：
-  *   adc_read_g_pair() → bsp_sdlog_feed(g1,g2)   只做判定+入队（微秒级）
+  *   adc_read_sample() → bsp_sdlog_feed(&s)    只做判定+入队（微秒级）
   *                     → bsp_sdlog_task()        主循环里批量写卡（ms 级）
   *
   * 为什么不在 feed 里直接写卡：一次 SD 扇区写是 ms 级，而采样间隔只有 20ms。
@@ -69,9 +69,8 @@ static void diag_err(const char *s)
 
 /* ---- 队列条目：一行 CSV 的原始数值（不是格式化后的字符串） ---- */
 typedef struct {
-  uint32_t t_ms;   /* 相对上电的毫秒时间戳 */
-  float    g1;
-  float    g2;
+  uint32_t     t_ms;   /* 相对上电的毫秒时间戳 */
+  adc_sample_t s;      /* 本样本快照：原始电导、零点、显示值、质量位 */
 } sdlog_row_t;
 
 static sdlog_row_t q[SDLOG_QUEUE_LEN];
@@ -196,55 +195,54 @@ void bsp_sdlog_init(void)
 /* 采样侧：判定 + 入队                                                         */
 /* ------------------------------------------------------------------------- */
 
-void bsp_sdlog_feed(float g1, float g2)
+void bsp_sdlog_feed(const adc_sample_t *s)
 {
   uint32_t now = HAL_GetTick();
   uint16_t next;
+  float peak;
 
   /* 卡不可用时不做任何事：不判定、不入队，避免队列被填满后
    * 卡恢复时把几秒前的旧数据当成新数据写进去 */
-  if (!sd_ready) { return; }
+  if (!sd_ready || s == 0) { return; }
 
   /* 两路取较大者参与判定 */
-  {
-    float peak = (g1 > g2) ? g1 : g2;
+  peak = (s->g1 > s->g2) ? s->g1 : s->g2;
 
-    if (!recording)
+  if (!recording)
+  {
+    if (peak >= SDLOG_START_TH)
     {
-      if (peak >= SDLOG_START_TH)
+      recording = 1;
+      log_t0_ms = now;    /* 新一次记录的零点：本文件的时间戳从这里归零 */
+      below_active = 0;
+      /* 不在这里开文件（开文件是 I/O，交给 task）；
+       * 用一个标志让 task 下一轮立刻建文件 */
+      state = SDLOG_RECORDING;
+    }
+    else
+    {
+      return;   /* 未达阈值：不记录 */
+    }
+  }
+  else
+  {
+    /* 已在记录中：检查退出条件 */
+    if (peak <= SDLOG_STOP_TH)
+    {
+      if (!below_active) { below_active = 1; below_since = now; }
+      else if ((now - below_since) >= SDLOG_STOP_HOLD_MS)
       {
-        recording = 1;
-        log_t0_ms = now;    /* 新一次记录的零点：本文件的时间戳从这里归零 */
+        /* 只清 recording，state 留给 task：文件里还有队列中未落盘的行，
+         * task 真正关闭文件后才置 IDLE。否则 REC 指示会提前熄灭，
+         * 而卡其实还在写最后一秒的数据 */
+        recording = 0;
         below_active = 0;
-        /* 不在这里开文件（开文件是 I/O，交给 task）；
-         * 用一个标志让 task 下一轮立刻建文件 */
-        state = SDLOG_RECORDING;
-      }
-      else
-      {
-        return;   /* 未达阈值：不记录 */
+        return;   /* 本样本不记录（已判停） */
       }
     }
     else
     {
-      /* 已在记录中：检查退出条件 */
-      if (peak <= SDLOG_STOP_TH)
-      {
-        if (!below_active) { below_active = 1; below_since = now; }
-        else if ((now - below_since) >= SDLOG_STOP_HOLD_MS)
-        {
-          /* 只清 recording，state 留给 task：文件里还有队列中未落盘的行，
-           * task 真正关闭文件后才置 IDLE。否则 REC 指示会提前熄灭，
-           * 而卡其实还在写最后一秒的数据 */
-          recording = 0;
-          below_active = 0;
-          return;   /* 本样本不记录（已判停） */
-        }
-      }
-      else
-      {
-        below_active = 0;   /* 回到阈值以上：清除计时 */
-      }
+      below_active = 0;   /* 回到阈值以上：清除计时 */
     }
   }
 
@@ -258,8 +256,7 @@ void bsp_sdlog_feed(float g1, float g2)
   }
 
   q[q_head].t_ms = now;
-  q[q_head].g1   = g1;
-  q[q_head].g2   = g2;
+  q[q_head].s    = *s;
   q_head = next;
 }
 
@@ -298,14 +295,20 @@ static uint8_t open_new_file(void)
 
   file_index = next_index;
 
-  /* 表头：把单位和判据写进文件，避免以后拿到数据不知道 1.0 是什么。
-   * 阈值用整数拼（X10 常数），不用 %f —— 原因见 fmt_f3 的说明 */
+  /* 表头：把单位、判据和每一列的含义写进文件，避免以后拿到数据不知道 1.0 是什么。
+   * 阈值用整数拼（X10 常数），不用 %f —— 原因见 fmt_f3 的说明。
+   * 缓冲声明为 static：七行注释约 400 字节，放栈上会把 snprintf 的栈用量
+   * 推到深水区（本工程默认栈 1KB），而这个函数只在主循环里被调、没有重入问题 */
   {
-    char hdr[160];
+    static char hdr[448];
     int n = snprintf(hdr, sizeof hdr,
-        "# GSR log unit=display(1/30 uS) fs=50Hz start_th=%lu.%01lu\r\n"
+        "# GSR log fs=50Hz start_th=%lu.%01lu\r\n"
         "# t_ms: ms from this file's first sample (first row = 0)\r\n"
-        "# t_ms,g1,g2,diff\r\n",
+        "# raw1,raw2: conductivity in uS, before zero offset\r\n"
+        "# off1,off2: zero offset in uS (fixed after power-on calibration)\r\n"
+        "# g1,g2,diff: display unit = (raw-off)*30; diff = abs(g1-g2)\r\n"
+        "# q: 1 = valid block, 0 = disturbed block rejected by range check\r\n"
+        "# t_ms,raw1,raw2,off1,off2,g1,g2,diff,q\r\n",
         (unsigned long)(SDLOG_START_TH_X10 / 10u),
         (unsigned long)(SDLOG_START_TH_X10 % 10u));
     UINT bw = 0;
@@ -333,26 +336,35 @@ static void close_file(void)
 static uint16_t drain_queue(void)
 {
   uint16_t written = 0;
-  char line[64];
+  char line[96];
 
   while (q_tail != q_head && written < SDLOG_WRITE_PER_TASK)
   {
     sdlog_row_t *r = &q[q_tail];
-    float diff = (r->g1 > r->g2) ? (r->g1 - r->g2) : (r->g2 - r->g1);
-    char s1[16], s2[16], s3[16];
+    const adc_sample_t *s = &r->s;
+    float diff = (s->g1 > s->g2) ? (s->g1 - s->g2) : (s->g2 - s->g1);
+    char v1[12], v2[12], v3[12], v4[12], v5[12], v6[12], v7[12];
     int n;
     UINT bw = 0;
     FRESULT fr;
 
     /* 固定三位小数：显示单位下 0.001 ≈ 0.000033μS，远小于 ADC 有效分辨率，
      * 不丢有效信息；固定格式也便于 Python 解析。
-     * 用 fmt_f3 而不是 %f —— newlib-nano 未开浮点 printf */
-    fmt_f3(s1, sizeof s1, r->g1);
-    fmt_f3(s2, sizeof s2, r->g2);
-    fmt_f3(s3, sizeof s3, diff);
+     * 用 fmt_f3 而不是 %f —— newlib-nano 未开浮点 printf。
+     * 列顺序：原始电导两路 → 零点两路 → 显示值两路 → 差值 → 质量位。
+     * 原始值与零点每行都存：事后既能用原始值重跑离线算法，
+     * 也能不依赖任何外部记录就完成 μS 换算（零点在上电标定后固定不变） */
+    fmt_f3(v1, sizeof v1, s->r1);
+    fmt_f3(v2, sizeof v2, s->r2);
+    fmt_f3(v3, sizeof v3, s->off1);
+    fmt_f3(v4, sizeof v4, s->off2);
+    fmt_f3(v5, sizeof v5, s->g1);
+    fmt_f3(v6, sizeof v6, s->g2);
+    fmt_f3(v7, sizeof v7, diff);
 
-    n = snprintf(line, sizeof line, "%lu,%s,%s,%s\r\n",
-                 (unsigned long)(r->t_ms - log_t0_ms), s1, s2, s3);
+    n = snprintf(line, sizeof line, "%lu,%s,%s,%s,%s,%s,%s,%s,%u\r\n",
+                 (unsigned long)(r->t_ms - log_t0_ms),
+                 v1, v2, v3, v4, v5, v6, v7, (unsigned)s->valid);
 
     fr = f_write(&logfile, line, (UINT)n, &bw);
     if (fr != FR_OK || bw != (UINT)n)

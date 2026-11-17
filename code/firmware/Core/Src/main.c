@@ -72,7 +72,7 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN 0 */
 /* 本文件只保留"编排"：初始化顺序、主循环节拍、界面刷新与错误处理。
  * 手写实现按功能拆在 Core/Src/BSP/（对外接口见上面的 Includes）：
- *   bsp_adc_acquire.c 采集链路：DMA 缓冲、块内抽取、滑动平均、停摆监测与恢复
+ *   bsp_adc_acquire.c 采集链路：DMA 缓冲、块内抽取、Butterworth 低通、停摆监测与恢复
  *   bsp_adc_cal.c     上电零点标定 + 电导换算（零点的唯一来源）
  *   bsp_sdlog.c       SD 卡 CSV 记录：触发判定 + 批量写卡
  *   bsp_anes.c        麻醉状态判定（相对差 + 迟滞）
@@ -168,16 +168,17 @@ int main(void)
 		   * 与屏上保持一致：不确定就不输出 */
 		  if (cal_done)
 		  {
-			  float g1, g2;
+			  adc_sample_t s;
 
-			  /* 两路电导取自同一次快照：波形与 SD 记录共用同一份，两处字面必然一致
-			   * （快照为什么必要见 adc_read_g_pair 的说明） */
-			  adc_read_g_pair(&g1, &g2);
+			  /* 本样本只取一次快照，波形/状态判定/SD 记录共用同一份，
+			   * 三处字面必然一致（快照为什么必要见 adc_read_sample 的说明） */
+			  adc_read_sample(&s);
 
-			  LCD_WaveformPush(g1, g2);   /* 双波形实时更新（滤波后的平滑值） */
+			  /* 双波形实时更新；valid=0 时该列留缺口，不把旧值再画一遍 */
+			  LCD_WaveformPush(s.g1, s.g2, s.valid);
 			  /* SD 卡记录：内部只做阈值判定 + 入队（微秒级），
 			   * 实际写卡在主循环的 bsp_sdlog_task 里批量完成 */
-			  bsp_sdlog_feed(g1, g2);
+			  bsp_sdlog_feed(&s);
 		  }
 	  }
 
@@ -192,12 +193,13 @@ int main(void)
 		  }
 		  else
 		  {
-			  /* 判定与显示用同一份数值：两路取自同一关中断快照（与波形/串口同一路径），免得"状态按 A 判、
-			   * 数值显示 B"；anes_update 内部持有迟滞记忆，返回值就是要显示的状态。
+			  /* 判定与显示用同一份数值：取自同一关中断快照（与波形同一条路径），
+			   * 免得"状态按 A 判、数值显示 B"；anes_update 内部持有迟滞记忆与
+			   * 持续时间确认，返回值就是要显示的状态。
 			   * 标定合格后的首次调用会覆盖掉 CAL 提示（见 status_cal） */
-			  float g1, g2;
-			  adc_read_g_pair(&g1, &g2);
-			  LCD_DrawSkinText(g1, g2, anes_update(g1, g2));
+			  adc_sample_t s;
+			  adc_read_sample(&s);
+			  LCD_DrawSkinText(s.g1, s.g2, anes_update(s.g1, s.g2));
 		  }
 		  /* 告警标记：状态行右端红块 = 时间窗内发生过 ADC/DMA 错误、采集停摆、上报停摆、
 		   * 抗扰块剔除（数据质量）或消费端丢样本（时基被压缩）。这些计数器都只增不减，

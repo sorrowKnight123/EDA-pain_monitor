@@ -20,26 +20,78 @@ volatile uint16_t adc_value1;   /* 滤波后的电导1有效样本（PC1） */
 volatile uint16_t adc_value2;   /* 滤波后的电导2有效样本（PC0） */
 volatile uint16_t adc_seq = 0;  /* 有效样本计数，主循环据此消费（回绕安全） */
 
-/* 8 点整数滑动平均（窗口长度 FILT_N 见 app_config.h）：O(1) 更新、无软浮点 */
+/* 最近一个有效样本的质量：1 = 两路都通过块内判据，0 = 至少一路被剔除。
+ * 被剔除时 adc_value 保持上一块的旧值（不冻结滤波、不丢时基），
+ * 但如果不说"这一块是旧的"，消费端就会把旧值当成新样本推进波形和记入 CSV，
+ * 事后完全无法区分"信号真的没变"和"这块被剔除了" */
+volatile uint8_t adc_last_valid = 1;
+
+/* 有效样本滤波：4 阶 Butterworth 低通 3Hz，2 个双二阶级联（DF2T 结构）。
+ * 输入/输出都是 ADC 码（0..4095），量化到 1 码。
+ *
+ * 系数（fs=50Hz, fc=3Hz，双线性变换 + 频率预畸变）：
+ *   K = tan(pi*fc/fs) = 0.190760，极点 Q = 0.541196 / 1.306563
+ * 独立复算核对过：与 Q=1/(2cos(pi/8))、1/(2cos(3pi/8)) 的标准 4 阶 Butterworth
+ * 逐项相差 < 4e-10（float32 精度内），极点模长 0.702 / 0.868（在单位圆内）。
+ * 幅频（含前级 20ms 块窗）：3Hz -3.01dB、5Hz -18.6dB、10Hz -46.5dB。
+ * 代价：阶跃过冲 11.2%、50% 上升时间 160ms、相位非线性。 */
+#define BQ1_B0   0.026200795f
+#define BQ1_B1   0.052401590f
+#define BQ1_B2   0.026200795f
+#define BQ1_A1  (-1.387619708f)
+#define BQ1_A2   0.492422887f
+#define BQ2_B0   0.030776160f
+#define BQ2_B1   0.061552321f
+#define BQ2_B2   0.030776160f
+#define BQ2_A1  (-1.629935531f)
+#define BQ2_A2   0.753040172f
+
 typedef struct {
-  uint16_t buf[FILT_N];
-  uint32_t sum;
-  uint8_t idx;
-  uint8_t cnt;
+  float   s1, s2;   /* 第 1 节状态（DF2T） */
+  float   t1, t2;   /* 第 2 节状态 */
+  uint8_t primed;   /* 0 = 尚未收到首个样本 */
 } GFilter;
 
-static GFilter gf1 = { {0}, 0, 0, 0 };   /* 电导1 滤波状态 */
-static GFilter gf2 = { {0}, 0, 0, 0 };   /* 电导2 滤波状态 */
+/* 一节双二次（Direct Form II Transposed）：每样本 5 次乘加 */
+inline static float biquad(float *s1, float *s2, float x,
+                           float b0, float b1, float b2, float a1, float a2)
+{
+  float y = b0 * x + *s1;
+  *s1 = b1 * x - a1 * y + *s2;
+  *s2 = b2 * x - a2 * y;
+  return y;
+}
+
+/* 首样本预置为稳态，避免从 0 起步产生一个虚假的阶跃（滤波器要 160ms 才追上）。
+ * 稳态条件：输入恒为 x 时输出恒为 x，据此反解两节的状态值（见 DF2T 递推式）。
+ * 实测：恒定输入下 300 个样本输出偏差 0 码 */
+static void gfilter_prime(GFilter *f, float x)
+{
+  f->primed = 1;
+  f->s1 = x * (1.0f - BQ1_B0);
+  f->s2 = x * (1.0f - BQ1_B0 - BQ1_B1 + BQ1_A1);
+  f->t1 = x * (1.0f - BQ2_B0);
+  f->t2 = x * (1.0f - BQ2_B0 - BQ2_B1 + BQ2_A1);
+}
 
 static uint16_t gfilter(GFilter *f, uint16_t raw)
 {
-  f->sum -= f->buf[f->idx];
-  f->buf[f->idx] = raw;
-  f->sum += raw;
-  f->idx = (uint8_t)((f->idx + 1) % FILT_N);
-  if (f->cnt < FILT_N) f->cnt++;
-  return (uint16_t)(f->sum / f->cnt);
+  float x = (float)raw;
+  float y;
+
+  if (!f->primed) { gfilter_prime(f, x); return raw; }
+
+  y = biquad(&f->s1, &f->s2, x, BQ1_B0, BQ1_B1, BQ1_B2, BQ1_A1, BQ1_A2);
+  y = biquad(&f->t1, &f->t2, y, BQ2_B0, BQ2_B1, BQ2_B2, BQ2_A1, BQ2_A2);
+
+  /* 输出回 ADC 码域：越界夹紧（IIR 在极端输入下可能冲出 0..4095），四舍五入 */
+  if (!(y > 0.0f)) { y = 0.0f; }              /* 同时挡住 NaN */
+  if (y > 4095.0f) { y = 4095.0f; }
+  return (uint16_t)(y + 0.5f);
 }
+
+static GFilter gf1 = {0};   /* 电导1 滤波状态 */
+static GFilter gf2 = {0};   /* 电导2 滤波状态 */
 
 /* 块内抽取：去最大/最小后取均值（10 取 8），抑制电极接触瞬间的野值；
  * 同时用「去极值后剩余样本」的极差做质量判据（取次大/次小），超限则整块作废
@@ -74,17 +126,21 @@ static uint8_t adc_block_reduce(const volatile uint16_t *p, uint16_t *out)
 }
 
 /* 处理一个 DMA 半区：偶数下标 = PC1（电导1），奇数下标 = PC0（电导2）。
- * 两通道分别判据：单侧电极受扰只冻结该侧，不影响另一侧 */
+ * 两通道分别判据：单侧电极受扰只冻结该侧，不影响另一侧。
+ * 任一侧被剔除都把整样本标为无效 —— 两路要成对使用（差值判据、波形同列），
+ * 一侧是旧值时这一列的"两路关系"已经不成立 */
 static void adc_process_half(const volatile uint16_t *p)
 {
   uint16_t v;
+  uint8_t  valid = 1;
 
   if (adc_block_reduce(p, &v))       adc_value1 = gfilter(&gf1, v);
-  else                               { adc_spike_ms = HAL_GetTick(); }
+  else                               { adc_spike_ms = HAL_GetTick(); valid = 0; }
 
   if (adc_block_reduce(p + 1, &v))   adc_value2 = gfilter(&gf2, v);
-  else                               { adc_spike_ms = HAL_GetTick(); }
+  else                               { adc_spike_ms = HAL_GetTick(); valid = 0; }
 
+  adc_last_valid = valid;
   adc_seq++;   /* 心跳照常推进：停摆监测只关心采集链路是否活着，与数据质量无关 */
 }
 

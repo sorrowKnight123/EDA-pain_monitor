@@ -69,7 +69,10 @@ void LCD_InitLayout(void);
 /* anes = 应用层已判定好的麻醉状态（0 = 未麻醉完全，1 = 麻醉完全）：判定含迟滞，
  * 记忆留在应用层（main.c 的 anes_state），本文件只把给定状态画出来 */
 void LCD_DrawSkinText(float G1, float G2, uint8_t anes);
-void LCD_WaveformPush(float G1, float G2);
+/* valid = 本样本是否通过采集侧质量判据：0 时只推进时基、不在该列落点，
+ * 曲线留出一个可见缺口（受扰块被剔除时 adc_value 仍是旧值，
+ * 画上去会让人以为信号"很稳"，实际那段什么都没测到） */
+void LCD_WaveformPush(float G1, float G2, uint8_t valid);
 /* 上电零点标定期间的状态行提示（此时尚未取得零点，三行数值保持空白）：
  * failed=0 黄色"还能采"，failed=1 红色"最近一轮均值不合格" */
 void LCD_DrawCalText(uint8_t failed);
