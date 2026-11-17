@@ -18,7 +18,6 @@ extern "C" {
 extern volatile uint16_t adc_value1;   /* 滤波后的电导1有效样本（PC1） */
 extern volatile uint16_t adc_value2;   /* 滤波后的电导2有效样本（PC0） */
 extern volatile uint16_t adc_seq;      /* 有效样本计数（回绕安全） */
-extern volatile uint32_t adc_spike_cnt;/* 因块内极差超限被剔除的块数：诊断行 K 用 */
 
 /* 启动采集链路：校准 ADC（F1 必要，减小偏移温漂）→ 以 DMA 循环模式启动 →
  * 打开 TIM3 触发源。上电时调用一次；这里的校准/启动失败不单独报错，

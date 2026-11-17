@@ -23,7 +23,6 @@
 #define LAYOUT_VAL_PITCH  32   /* 数值行距 */
 #define ROW_LABEL_Y(i)    (LAYOUT_VAL_Y1 + (i) * LAYOUT_VAL_PITCH)   /* 第 i 行标签/数值的 y */
 #define LAYOUT_STATUS_Y  202   /* 底部麻醉状态文字 y（高 16px） */
-#define LAYOUT_DEBUG_Y   220   /* 底部调试行 y（高 16px，紧接状态行下方；ADC_DEBUG_SHOW_RAW 时用） */
 /* 量程/阈值等应用参数在 app_config.h（G_RANGE_MAX、G_STATE_ON_PCT / G_STATE_OFF_PCT） */
 
 /* 调色板：只用到的 7 个色（原先还有 HUE_xx 两层间接 + 5 个从未使用的颜色，已删） */
@@ -71,7 +70,6 @@ void LCD_InitLayout(void);
  * 记忆留在应用层（main.c 的 anes_state），本文件只把给定状态画出来 */
 void LCD_DrawSkinText(float G1, float G2, uint8_t anes);
 void LCD_WaveformPush(float G1, float G2);
-void LCD_DebugLine(const char *text);
 /* 上电零点标定期间的状态行提示（此时尚未取得零点，三行数值保持空白）：
  * failed=0 黄色"还能采"，failed=1 红色"最近一轮均值不合格" */
 void LCD_DrawCalText(uint8_t failed);

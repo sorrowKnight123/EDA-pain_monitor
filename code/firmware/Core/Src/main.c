@@ -135,10 +135,6 @@ int main(void)
    * 之后插卡由 bsp_sdlog_task 自动重试挂载。放在 IWDG 之后调用：
    * 挂载可能耗时几十 ms，此时狗已启动，不能有更长的阻塞 */
   bsp_sdlog_init();
-  /* 串口打印卡的识别结果（类型/容量/块数/文件系统/下一个文件名）。
-   * 此时主循环还没开始，USART1 空闲，阻塞发送安全。
-   * 无卡时只打印 present=0 ready=0 —— 也是有效信息 */
-  bsp_sdlog_print_info();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -226,25 +222,6 @@ int main(void)
 		   * 放在 ALARM_SHOW 之外：这是"数据正在落盘"的反馈，
 		   * 与告警上屏总开关无关，关告警时也必须能看见 */
 		  LCD_DrawRecFlag(bsp_sdlog_state() == SDLOG_RECORDING);
-		  /* 诊断行：ADC_DEBUG_SHOW_RAW=1 时恒显；否则只在"最近有受扰块被剔除 / 丢了样本"
-		   * 时自动上屏 —— 现场核对 ADC_BLOCK_SPREAD_* 阈值只需看这行的 K 与 R/Z 是否随
-		   * 干扰增长，不必再改宏重编译固件；无异常时清空该行（整行灰底重绘约 1ms，可忽略）。
-		   * R1/R2 = 当前原始码值，Z1/Z2 = 最近一个标定窗口的均值（0 = 未标定），
-		   * K = 被剔除的受扰块数。宽度上限：4 个 %4u + K 取模到 4 位 = 38 字符 = 304px
-		   * ≤ 320px，不会写出行尾之外（K 不取模时最多 10 位，会溢出屏宽）。
-		   * 整段受 ALARM_SHOW 总开关约束：置 0 时既不画也不清（该行保持灰底） */
-		  if (ALARM_SHOW && (ADC_DEBUG_SHOW_RAW || mark_alive(&adc_spike_ms) || mark_alive(&adc_drop_ms)))
-		  {	char dbg[48];
-			snprintf(dbg, sizeof dbg, "R1=%4u R2=%4u Z1=%4u Z2=%4u K=%4lu",
-					(unsigned)adc_value1, (unsigned)adc_value2,
-					(unsigned)cal_z1, (unsigned)cal_z2,
-					(unsigned long)(adc_spike_cnt % 10000u));
-			LCD_DebugLine(dbg);
-		  }
-		  else if (ALARM_SHOW)
-		  {
-			LCD_DebugLine("");   /* 清掉上一次的残留 */
-		  }
 	  }
     /* USER CODE END WHILE */
 

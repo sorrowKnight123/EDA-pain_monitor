@@ -98,6 +98,11 @@ static uint8_t  recording = 0;
 static uint32_t below_since = 0;      /* 低于退出阈值的起始时刻；0 = 当前不在低位 */
 static uint8_t  below_active = 0;
 
+/* 本次记录的零点：CSV 的 t_ms 一律相对它计算，使每个文件都从 0 开始。
+ * 取"判定开始记录时第一个样本的采样时刻"，不取文件打开时刻 —— 文件是 task 里
+ * 才建的（开文件是 I/O），比入队晚，用打开时刻会让第一个样本变成负数 */
+static uint32_t log_t0_ms = 0;
+
 static uint8_t fs_mounted = 0;
 
 /* 失败退避：I/O 出错后至少隔 SDLOG_RETRY_MS 再试。
@@ -169,70 +174,6 @@ static uint8_t mount_fs(void)
   return 1;
 }
 
-void bsp_sdlog_print_info(void)
-{
-  bsp_sd_info_t info;
-  char buf[112];
-  const char *type;
-
-  bsp_sd_get_info(&info);
-
-  if (!info.ready)
-  {
-    snprintf(buf, sizeof buf,
-             "\r\n[SD] present=%u ready=0  (no card / not recognised)\r\n",
-             (unsigned)sd_present);
-    diag_puts(buf);
-    return;
-  }
-
-  type = (info.card_type == CARD_SDSC)      ? "SDSC" :
-         (info.card_type == CARD_SDHC_SDXC) ? "SDHC/XC" : "UNKNOWN";
-
-  /* capacity 直接算成 MB，避免打印浮点 */
-  snprintf(buf, sizeof buf,
-           "\r\n[SD] present=%u ready=1 type=%s blk=%lu blksz=%lu cap=%luMB\r\n",
-           (unsigned)sd_present, type,
-           (unsigned long)info.block_count,
-           (unsigned long)info.block_size,
-           (unsigned long)(info.capacity_kb / 1024u));
-  diag_puts(buf);
-
-  if (info.card_type != CARD_SDSC)
-  {
-    /* 手册 p.683/692/705：本板卡座标称最大 2GB（SDSC）。
-     * 识别成 SDHC 说明卡超出标称范围，能识别不代表长期可靠 */
-    diag_puts("[SD] WARN: card is not SDSC; board is rated for <=2GB\r\n");
-  }
-
-  snprintf(buf, sizeof buf, "[SD] fs=%s next=LOG%04lu.CSV\r\n",
-           fs_mounted ? "mounted" : "NOT mounted",
-           (unsigned long)(file_index + 1u > SDLOG_MAX_FILES ? 1u : file_index + 1u));
-  diag_puts(buf);
-
-  /* 裸扇区写入自检：不经过 FatFs，直接确认 SDIO/HAL 能不能把数据写进卡。
-   * 结果与上面的挂载状态组合起来就能定位层次：
-   *   自检 PASS + 挂载 OK  → 底层可写，若后续仍 write failed 则是 FatFs 层问题
-   *   自检 FAIL            → SDIO/HAL/卡 层就写不进去（看 er/he 判断是超时还是错误） */
-  if (SDLOG_SELFTEST_WRITE)
-  {
-    if (bsp_sd_selftest_write() == 0)
-    {
-      diag_puts("[SD] selftest: write OK\r\n");
-    }
-    else
-    {
-      int      er = 0;
-      uint32_t he = 0, st = 0;
-      bsp_sd_get_last_error(&er, &he, &st);
-      snprintf(buf, sizeof buf,
-               "[SD] selftest: write FAIL er=%d he=0x%lX st=%lu\r\n",
-               er, (unsigned long)he, (unsigned long)st);
-      diag_puts(buf);
-    }
-  }
-}
-
 void bsp_sdlog_init(void)
 {
   sd_ready = 0;
@@ -273,6 +214,7 @@ void bsp_sdlog_feed(float g1, float g2)
       if (peak >= SDLOG_START_TH)
       {
         recording = 1;
+        log_t0_ms = now;    /* 新一次记录的零点：本文件的时间戳从这里归零 */
         below_active = 0;
         /* 不在这里开文件（开文件是 I/O，交给 task）；
          * 用一个标志让 task 下一轮立刻建文件 */
@@ -359,9 +301,10 @@ static uint8_t open_new_file(void)
   /* 表头：把单位和判据写进文件，避免以后拿到数据不知道 1.0 是什么。
    * 阈值用整数拼（X10 常数），不用 %f —— 原因见 fmt_f3 的说明 */
   {
-    char hdr[128];
+    char hdr[160];
     int n = snprintf(hdr, sizeof hdr,
         "# GSR log unit=display(1/30 uS) fs=50Hz start_th=%lu.%01lu\r\n"
+        "# t_ms: ms from this file's first sample (first row = 0)\r\n"
         "# t_ms,g1,g2,diff\r\n",
         (unsigned long)(SDLOG_START_TH_X10 / 10u),
         (unsigned long)(SDLOG_START_TH_X10 % 10u));
@@ -409,26 +352,13 @@ static uint16_t drain_queue(void)
     fmt_f3(s3, sizeof s3, diff);
 
     n = snprintf(line, sizeof line, "%lu,%s,%s,%s\r\n",
-                 (unsigned long)r->t_ms, s1, s2, s3);
+                 (unsigned long)(r->t_ms - log_t0_ms), s1, s2, s3);
 
     fr = f_write(&logfile, line, (UINT)n, &bw);
     if (fr != FR_OK || bw != (UINT)n)
     {
-      /* 把失败拆开打印：fr=FRESULT（1=DISK_ERR 2=INT_ERR 4=NO_FILE 6=INVALID_OBJECT
-       * 7=DENIED 13=WRITE_PROTECTED）、bw=实际写入字节、er=bsp_sd 的失败码
-       * （-2 HAL 命令/数据阶段、-3 等编程超时、-4 写后读回不一致）、
-       * he=HAL ErrorCode、st=失败时卡状态（7=PRG 表示卡还在编程） */
-        int      er = 0;
-        uint32_t he = 0, st = 0;
-        char     msg[96];
-
-        bsp_sd_get_last_error(&er, &he, &st);
-        snprintf(msg, sizeof msg,
-                 "[SD] write failed fr=%u want=%u bw=%u er=%d he=0x%lX st=%lu\r\n",
-                 (unsigned)fr, (unsigned)n, (unsigned)bw, er,
-                 (unsigned long)he, (unsigned long)st);
-        diag_err(msg);
-        state = SDLOG_ERROR;
+      state = SDLOG_ERROR;
+      diag_err("[SD] write failed\r\n");
       /* 不消费队列条目：保留数据，退避后重试（若卡真的坏了，
        * 队列会满并开始计入 drop_cnt，这是有意的降级） */
       retry_backoff();

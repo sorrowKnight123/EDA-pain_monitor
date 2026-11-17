@@ -20,11 +20,6 @@ volatile uint16_t adc_value1;   /* 滤波后的电导1有效样本（PC1） */
 volatile uint16_t adc_value2;   /* 滤波后的电导2有效样本（PC0） */
 volatile uint16_t adc_seq = 0;  /* 有效样本计数，主循环据此消费（回绕安全） */
 
-volatile uint32_t adc_err_cnt = 0;   /* ADC/DMA 错误计数。F1 的 ADC 没有 overrun 标志
-                                      * （stm32f1xx_hal_adc.h 注明 Not available on STM32F1），
-                                      * 唯一可达路径是 DMA 传输错误 TE —— 所以这里数的是 TE */
-volatile uint32_t adc_spike_cnt = 0; /* 因块内极差超限被剔除的块数：诊断行 K，现场校核阈值用 */
-
 /* 8 点整数滑动平均（窗口长度 FILT_N 见 app_config.h）：O(1) 更新、无软浮点 */
 typedef struct {
   uint16_t buf[FILT_N];
@@ -85,10 +80,10 @@ static void adc_process_half(const volatile uint16_t *p)
   uint16_t v;
 
   if (adc_block_reduce(p, &v))       adc_value1 = gfilter(&gf1, v);
-  else                               { adc_spike_cnt++; adc_spike_ms = HAL_GetTick(); }
+  else                               { adc_spike_ms = HAL_GetTick(); }
 
   if (adc_block_reduce(p + 1, &v))   adc_value2 = gfilter(&gf2, v);
-  else                               { adc_spike_cnt++; adc_spike_ms = HAL_GetTick(); }
+  else                               { adc_spike_ms = HAL_GetTick(); }
 
   adc_seq++;   /* 心跳照常推进：停摆监测只关心采集链路是否活着，与数据质量无关 */
 }
@@ -193,10 +188,10 @@ void adc_stall_monitor(void)
 
 /* ADC/DMA 错误计数。注意：DMA 传输错误(TE)发生时通道已被硬件停转、
  * HAL 已关闭全部 DMA 中断（HAL_DMA_IRQHandler），采集随之停止——
- * 本回调只负责计数留痕，实际恢复由 adc_stall_monitor() 统一执行 */
+ * 本回调只负责记录时刻留痕，实际恢复由 adc_stall_monitor() 统一执行 */
 void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
 {
-  if (hadc->Instance == ADC1) { adc_err_cnt++; adc_err_ms = HAL_GetTick(); }
+  if (hadc->Instance == ADC1) { adc_err_ms = HAL_GetTick(); }
 }
 
 /* 两个半区回调：前 10 次触发（下标 0..19）落在前半区，后 10 次落在后半区，

@@ -369,13 +369,6 @@ void LCD_DrawSkinText(float G1, float G2, uint8_t anes)
 	}
 }
 
-/* 底部调试行（白色 ASCII，见 LAYOUT_DEBUG_Y）：诊断采集链路用，与正常显示无关 */
-void LCD_DebugLine(const char *text)
-{
-	LCD_Rect_Fill(0, LAYOUT_DEBUG_Y, SCREEN_W, 16, GRAY);
-	LCD_Ascii8x16(0, LAYOUT_DEBUG_Y, text, WHITE);
-}
-
 /* 上电零点标定期间的状态行提示：此时尚未取得零点，三行数值保持空白，
  * 用一行提示代替"未麻醉完全/麻醉完全"，避免误读。
  * failed=1 表示最近一个 1s 窗口的均值被标定判据拒绝（量程外/不稳定），

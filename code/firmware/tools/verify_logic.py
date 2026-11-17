@@ -56,7 +56,6 @@ SPLIT_Y  = layout('LAYOUT_SPLIT_Y', cast=int)
 VAL_Y1   = layout('LAYOUT_VAL_Y1', cast=int)
 VAL_PITCH = layout('LAYOUT_VAL_PITCH', cast=int)
 STATUS_Y = layout('LAYOUT_STATUS_Y', cast=int)
-DEBUG_Y  = layout('LAYOUT_DEBUG_Y', cast=int)
 VAL_W_REF = layout('VAL_W_REF', cast=int)
 WF_X0 = layout('WF_X0', cast=int)
 WF_W  = layout('WF_W', cast=int)
@@ -312,10 +311,9 @@ check("波形区底边 y=%d 停在分隔线 y=%d 之上" % (WF_H - 1, SPLIT_Y),
 lab_g1 = 4 * 16 + 8 + 8                            # "皮肤电导1:" = 4 汉字 + '1' + ':'
 check("左栏放得下\"标签+数值\"（%d+%d=%d <= %d）" % (lab_g1, VAL_W_REF, lab_g1 + VAL_W_REF, SPLIT_X - 1),
       lab_g1 + VAL_W_REF <= SPLIT_X - 1)
-# 底部两行不得重叠、不得超出屏高
-check("状态行 %d..%d 与调试行 %d..%d 不重叠且都在屏内" % (STATUS_Y, STATUS_Y + 15,
-                                                       DEBUG_Y, DEBUG_Y + 15),
-      STATUS_Y + 16 <= DEBUG_Y and DEBUG_Y + 16 <= SCREEN_H)
+# 底部状态行不得超出屏高
+check("状态行 %d..%d 在屏内" % (STATUS_Y, STATUS_Y + 15),
+      STATUS_Y + 16 <= SCREEN_H)
 # 数值三行不得压到分隔线
 check("数值三行底边 %d 在分隔线 %d 之上" % (VAL_Y1 + 2 * VAL_PITCH + 15, SPLIT_Y),
       VAL_Y1 + 2 * VAL_PITCH + 15 < SPLIT_Y)
@@ -967,8 +965,6 @@ check("app_config.h 的阈值公式说明是\"相加\"（与采集模块 bsp_adc
       '是**相加**，不是取较大者' in CFG and 'max(绝对下限' not in CFG)
 check("采集模块（bsp_adc_acquire.c）的块判据确实用加法",
       'ADC_BLOCK_SPREAD_PCT / 100u + ADC_BLOCK_SPREAD_ABS' in ADC_C)
-check("adc_err_cnt 注释不再宣称能数 overrun（F1 的 ADC 没有 OVR 标志）",
-      '唯一可达路径是 DMA 传输错误' in ADC_C and 'overrun 等' not in ADC_C)
 
 # e) CubeMX 回退面：历史上回过退的项必须在 .ioc 里钉死
 check("lcd.ioc 显式钉住 ADC1.ScanConvMode（历史回退项）", 'ADC1.ScanConvMode=ADC_SCAN_ENABLE' in IOC)

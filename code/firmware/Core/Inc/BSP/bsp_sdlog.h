@@ -46,11 +46,6 @@ void bsp_sdlog_task(void);
 
 sdlog_state_t bsp_sdlog_state(void);
 
-/* 串口诊断：打印卡的识别结果（类型/容量/块数/就绪）、文件系统状态、
- * 下一个文件名。在 bsp_sdlog_init 之后调用一次即可。
- * 阻塞发送（50Hz 数据上报已移除，USART1 现在只用于诊断输出） */
-void bsp_sdlog_print_info(void);
-
 #ifdef __cplusplus
 }
 #endif
