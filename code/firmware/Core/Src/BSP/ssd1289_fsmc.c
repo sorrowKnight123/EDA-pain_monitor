@@ -184,7 +184,7 @@ static uint16_t LCD_TextGBWidth(const uint16_t *gb)
 }
 
 /* 数值格式化：不带单位，小数位随量级自适应（G<0 → 0，G>1999.99 限幅）。
- * 屏上三行数值与串口上报共用本函数，两处字面必然一致。
+ * 屏上三行数值（含差值行）共用本函数，列宽按最坏字符串锁定。
  *   v < 1000   （< 10）    → 2 位小数（小信号保留细节）
  *   v < 10000  （10~100）  → 1 位小数
  *   其余       （>= 100）  → 整数
@@ -390,6 +390,22 @@ void LCD_DrawCalText(uint8_t failed)
 	LCD_Rect_Fill(0, LAYOUT_STATUS_Y, SCREEN_W, 16, GRAY);
 	LCD_TextGB(mx, LAYOUT_STATUS_Y, TEXT_CAL, failed ? RED : YELLOW);
 	status_cal = 1;
+}
+
+/* SD 记录指示：状态行右端画 "REC"。
+ * 位置 = SCREEN_W-48 .. SCREEN_W-17（32px 宽），与最右端 16px 的告警块不重叠；
+ * 状态文字居中（最长"未麻醉完全" 80px，中心在 120..200），也不会压到这里。
+ * 每次 500ms 刷新都重画：LCD_DrawSkinText 状态切换时整行擦灰，
+ * 只在"进入记录"那一刻画一次的话，第一次状态切换就会把它擦掉。 */
+void LCD_DrawRecFlag(uint8_t on)
+{
+	uint16_t x = (uint16_t)(SCREEN_W - 48);
+
+	LCD_Rect_Fill(x, LAYOUT_STATUS_Y, 32, 16, GRAY);
+	if (on)
+	{
+		LCD_Ascii8x16(x, LAYOUT_STATUS_Y, "REC", RED);
+	}
 }
 
 /* 双波形实时更新：每个 ADC 采样点推进两路电导曲线 */

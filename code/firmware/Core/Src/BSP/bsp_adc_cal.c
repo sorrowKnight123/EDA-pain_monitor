@@ -15,7 +15,7 @@ volatile uint8_t cal_done = 0;                /* 1 = 已取得合格零点 */
 volatile uint8_t cal_fail = 0;                /* 1 = 最近一个窗口被判不合格（屏上提示转红） */
 
 /* 电导换算：G = 5*(4095-adc)/adc（μS），即前端 0..5μS 量程的传输函数。
- * 公式只在此处出现：标定零点换算、屏上显示、串口上报都经它取值 */
+ * 公式只在此处出现：标定零点换算、屏上显示、SD 记录都经它取值 */
 static float adc_g_raw(uint16_t adc)
 {
   float a = (float)adc;

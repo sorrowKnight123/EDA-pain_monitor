@@ -24,7 +24,8 @@ $inc = @(
   "-I$root\Drivers\STM32F1xx_HAL_Driver\Inc",
   "-I$root\Drivers\STM32F1xx_HAL_Driver\Inc\Legacy",
   "-I$root\Drivers\CMSIS\Device\ST\STM32F1xx\Include",
-  "-I$root\Drivers\CMSIS\Include"
+  "-I$root\Drivers\CMSIS\Include",
+  "-I$root\Middlewares\Third_Party\FatFs\src"
 )
 $defs = @("-DUSE_HAL_DRIVER", "-DSTM32F103xE", "-DDEBUG")
 # 优化等级可用环境变量覆盖（默认 -O0，与 IDE 的 Debug 配置一致；Release 配置为 -Os）
@@ -37,6 +38,8 @@ $flags = @("-mcpu=cortex-m3", "-std=gnu11", "-g3", $opt, "-Wall",
 $srcs = @()
 $srcs += Get-ChildItem "$root\Core" -Filter *.c -Recurse | ForEach-Object { $_.FullName }
 $srcs += Get-ChildItem "$root\Drivers\STM32F1xx_HAL_Driver\Src" -Filter *.c | ForEach-Object { $_.FullName }
+# FatFs 中间件（ff.c 与 diskio.c；diskio.c 适配到 bsp_sd.c）
+$srcs += Get-ChildItem "$root\Middlewares\Third_Party\FatFs\src" -Filter *.c | ForEach-Object { $_.FullName }
 # 启动文件（汇编）单独编译
 $startup = Join-Path $root "Core\Startup\startup_stm32f103zetx.s"
 

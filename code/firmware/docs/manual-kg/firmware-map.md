@@ -15,7 +15,7 @@
 | `Core/Src/adc.c` `Core/Inc/adc.h` | ADC1 双通道（IN11=PC1, IN10=PC0），TIM3 TRGO 触发，扫描+DMA | [7.14 ADC 模数转换](../manual-kg/examples/03-id-adc-dac-rtc-mem.md) p.392-400；[7.15 ADC 多路采集](../manual-kg/examples/03-id-adc-dac-rtc-mem.md) p.401 | 参考例程，HAL 重写 |
 | `Core/Src/tim.c` | TIM3 定时 500Hz（PSC=71, ARR=1999）作 ADC 触发源 | [7.21 TIMER 定时器中断](../manual-kg/examples/04-timer-wdg-wireless-can.md) p.452-456 | 参考例程 |
 | `Core/Src/dma.c` | DMA1_Ch1=ADC1 循环搬运；DMA1_Ch4=USART1_TX | [7.63 DMA 传输](../manual-kg/examples/07-sd-audio-crc-pvd-lp-dma-sensor.md) p.743-748；[7.14](../manual-kg/examples/03-id-adc-dac-rtc-mem.md) | 参考例程 |
-| `Core/Src/usart.c` | USART1 115200 8N1（PA9/PA10），DMA 发送 | [7.7 USART 串口1](../manual-kg/examples/02-uart-rs485.md) p.333-347 | 参考例程 |
+| `Core/Src/usart.c` | USART1 115200 8N1（PA9/PA10），现仅用于 SD 诊断输出（阻塞发送；DMA1_Ch4 通路保留但未使用） | [7.7 USART 串口1](../manual-kg/examples/02-uart-rs485.md) p.333-347 | 参考例程 |
 | `Core/Src/fsmc.c` | FSMC Bank1 第4区（NE4）16 位，驱动 SSD1289 屏 | [7.36 TFT 只显示红色](../manual-kg/examples/06-tft-touch-gui.md) p.602-619（FSMC NE4/RS=A0/0x6C000000） | 参考例程，HAL 重写 |
 | `Core/Src/gpio.c` | GPIO 时钟与引脚初始化 | [7.1 LED 流水灯](../manual-kg/examples/01-gpio-key-systick.md) p.273-288 | 参考例程 |
 | `Core/Src/BSP/ssd1289_fsmc.c` | SSD1289 屏驱动：初始化、布局、数值/波形/状态渲染 | [7.36–7.54 TFT 显示与触摸](../manual-kg/examples/06-tft-touch-gui.md) p.602-672 | 本项目自研（例程是 ILI9320，屏型号不同） |
@@ -24,7 +24,9 @@
 | `Core/Src/BSP/bsp_anes.c` | 麻醉状态判定（相对差 + 迟滞） | —（应用层逻辑，手册无对应） | 本项目自研 |
 | `Core/Src/BSP/bsp_fault.c` | 故障/劣化时间窗标记（告警红块判据） | —（应用层逻辑） | 本项目自研 |
 | `Core/Src/BSP/bsp_iwdg.c` | 独立看门狗，LSI/64/625 ≈1s（**寄存器级**，不用 HAL IWDG） | [7.22 IWDG 独立看门狗](../manual-kg/examples/04-timer-wdg-wireless-can.md) p.457-462 | 参考例程（寄存器写法） |
-| `Core/Src/BSP/bsp_uart_report.c` | 串口1 上报：帧组装、DMA 发送、停摆恢复 | [7.7 USART1](../manual-kg/examples/02-uart-rs485.md)、[7.11 Printf 中断收发](../manual-kg/examples/02-uart-rs485.md) p.362-369 | 本项目自研 |
+| `Core/Src/BSP/bsp_sd.c` | SD 卡底层：SDIO 初始化、SDSC 识别、4 位总线/9MHz、扇区读写、卡在位检测 | [7.55 SD 卡访问](../manual-kg/examples/07-sd-audio-crc-pvd-lp-dma-sensor.md) p.673-687 | 参考例程（HAL 重写） |
+| `Core/Src/BSP/bsp_sdlog.c` | CSV 记录：双阈值迟滞判定、环形队列、批量写卡、拔插卡处理、REC 指示 | [7.56 SD FATFS](../manual-kg/examples/07-sd-audio-crc-pvd-lp-dma-sensor.md) p.688-692 | 本项目自研 |
+| `Middlewares/Third_Party/FatFs/` | FatFs R0.11（ST CubeF1 包）+ 自写 `ffconf.h` / `diskio.c` | [7.56 SD FATFS](../manual-kg/examples/07-sd-audio-crc-pvd-lp-dma-sensor.md) | 第三方中间件 |
 | `Core/Src/BSP/cn_font_16.h` | 16×16 中文点阵字模 | [7.53 TFT 显示中文字](../manual-kg/examples/06-tft-touch-gui.md) p.668-671 | 参考例程（字模概念） |
 | `Core/Src/BSP/XGA_8x16.h` | 8×16 ASCII 点阵字模 | [7.52 TFT 显示英文字](../manual-kg/examples/06-tft-touch-gui.md) p.661-667 | 参考例程 |
 | `Core/Inc/app_config.h` | 应用参数集中定义（采集/滤波/阈值/量程） | — | 本项目自研 |
@@ -35,10 +37,15 @@
 |------|------|---------|
 | PC0 | ADC1_IN10，电导2 | 板载 ADC 通道（例程用 PC3，本项目自定义） |
 | PC1 | ADC1_IN11，电导1 | 同上 |
-| PA9 / PA10 | USART1 TX/RX | 串口1（pin-map） |
+| PA9 / PA10 | USART1 TX/RX | 串口1：仅 SD 诊断输出（50Hz 数据上报已移除） |
 | PG12 | FSMC_NE4，LCD 片选 | TFT 例程 NE4 |
 | FSMC_A0 | LCD RS（命令/数据选择） | TFT 例程 RS=A0 |
 | FSMC_D[0:15] | LCD 16 位数据 | TFT 例程 |
+| PC8~PC11 | SDIO D0~D3 | SD 例程 SDIO 4 位 |
+| PC12 | SDIO_CK | SD 例程 |
+| PD2 | SDIO_CMD | SD 例程 |
+| PC6 | SD 卡在位检测（NCD） | 手册 7.57 引脚表 |
+| PA1 | LCD 背光 | 本项目自定义 |
 
 ## 本项目**未使用**、但板子具备的能力（扩展候选）
 
@@ -46,7 +53,6 @@
 
 | 能力 | 手册条目 | 硬件 |
 |------|---------|------|
-| SD 卡存储 / FATFS | [7.55–7.57](../manual-kg/examples/07-sd-audio-crc-pvd-lp-dma-sensor.md) p.673-705 | SDIO PC8~PC12/PD2 |
 | 触摸屏输入 | [7.47–7.51](../manual-kg/examples/06-tft-touch-gui.md) p.648-660 | XPT2046, SPI2, PG7 |
 | RTC 实时时钟 | [7.17–7.18](../manual-kg/examples/03-id-adc-dac-rtc-mem.md) p.408-431 | 32.768kHz + CR1220 |
 | 片外 EEPROM 存配置 | [7.19](../manual-kg/examples/03-id-adc-dac-rtc-mem.md) p.432-447 | 24C02, I2C1 PB6/PB7 |
@@ -72,6 +78,8 @@
 3. **ADC 通道不同**：例程用 PC3(IN13) 单通道电位器；本项目用 PC0(IN10)+PC1(IN11) 双通道电导。
 4. **I2C 用法**：手册 7.19 EEPROM 用硬件 I2C1，7.35 收音机用软件模拟 I2C——本项目均未使用。
 5. 手册 7.15（ADC 多路采集）、7.74（UCOS+UCGUI）仅有标题无正文。
+6. **SDIO 时钟**：手册 p.686 写"高速模式超过 24M 要开 bypass、卡最高 25MHz"是 **F4 的时钟树**；F103 的 SDIO 时钟源固定为 HCLK/2=36MHz，`SDIO_CK=36M/(2×CLKDIV)`，**CLKDIV 最小为 2 → F1 最高只有 9MHz**，用不到 bypass。本项目按 9MHz 配置。
+7. **不能用 `%f` 打印浮点**：本工程链接 newlib-nano 且 `.cproject` 里 `nanoprintffloat=false`（未加 `-u _printf_float`）。`printf/snprintf` 的 `%f` **编译链接都不报错，但运行期输出空串**。现有 `LCD_ValStr` 一直用整数拼小数就是为了避开它；`bsp_sdlog.c` 的 `fmt_f3()` 同理。新增任何浮点输出前先确认这一点。
 
 ## 相关
 

@@ -33,10 +33,10 @@
 /* 应用实现按功能拆在 Core/Src/BSP/，这里只 include 各模块的对外接口 */
 #include "bsp_adc_acquire.h"
 #include "bsp_adc_cal.h"
-#include "bsp_uart_report.h"
 #include "bsp_anes.h"
 #include "bsp_iwdg.h"
 #include "bsp_fault.h"
+#include "bsp_sdlog.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -74,7 +74,7 @@ void SystemClock_Config(void);
  * 手写实现按功能拆在 Core/Src/BSP/（对外接口见上面的 Includes）：
  *   bsp_adc_acquire.c 采集链路：DMA 缓冲、块内抽取、滑动平均、停摆监测与恢复
  *   bsp_adc_cal.c     上电零点标定 + 电导换算（零点的唯一来源）
- *   bsp_uart_report.c 串口1 上报：帧组装、DMA 发送、停摆恢复
+ *   bsp_sdlog.c       SD 卡 CSV 记录：触发判定 + 批量写卡
  *   bsp_anes.c        麻醉状态判定（相对差 + 迟滞）
  *   bsp_iwdg.c        独立看门狗（启动与喂狗）
  *   bsp_fault.c       故障/劣化标记的时间窗（告警红块的判据来源） */
@@ -129,6 +129,16 @@ int main(void)
    * 免得把没有意义的 0.00 当成读数（零点标定合格后首次刷新即填入） */
   lcd_ready = 1;              /* 此后 Error_Handler 可以上屏报错 */
   bsp_iwdg_init();            /* 独立看门狗 ≈1s，主循环喂狗 */
+
+  /* SD 卡记录：挂载文件系统、扫描已有 LOGxxxx.CSV 确定下一个序号。
+   * 无卡/卡不可用不是致命错误 —— 采集、显示照常工作，
+   * 之后插卡由 bsp_sdlog_task 自动重试挂载。放在 IWDG 之后调用：
+   * 挂载可能耗时几十 ms，此时狗已启动，不能有更长的阻塞 */
+  bsp_sdlog_init();
+  /* 串口打印卡的识别结果（类型/容量/块数/文件系统/下一个文件名）。
+   * 此时主循环还没开始，USART1 空闲，阻塞发送安全。
+   * 无卡时只打印 present=0 ready=0 —— 也是有效信息 */
+  bsp_sdlog_print_info();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -141,9 +151,9 @@ int main(void)
 	  bsp_iwdg_feed();       /* 喂狗 */
 
 	  adc_stall_monitor();   /* 采集链路停摆监测（见其头文件说明） */
-	  uart_lifetime_monitor(); /* 上报链路停摆监测：IWDG 管不到它（狗在主循环里被喂） */
 
 	  adc_cal_task();        /* 上电零点标定：取到合格零点前一直重采 */
+	  bsp_sdlog_task();      /* SD 记录：开/停判定、批量写卡、拔插卡处理 */
 
 	  if (adc_seq != last_seq)
 	  {
@@ -164,14 +174,14 @@ int main(void)
 		  {
 			  float g1, g2;
 
-			  /* 两路电导取自同一次快照：波形与串口共用同一份，两处字面必然一致
+			  /* 两路电导取自同一次快照：波形与 SD 记录共用同一份，两处字面必然一致
 			   * （快照为什么必要见 adc_read_g_pair 的说明） */
 			  adc_read_g_pair(&g1, &g2);
 
 			  LCD_WaveformPush(g1, g2);   /* 双波形实时更新（滤波后的平滑值） */
-			  /* 串口1 DMA 上报：与有效样本同步（50Hz），格式 "<电导1>，<电导2>\n"，
-			   * 数值经 LCD_ValStr 格式化，与屏上显示字面一致 */
-			  uart_report_pair(g1, g2);
+			  /* SD 卡记录：内部只做阈值判定 + 入队（微秒级），
+			   * 实际写卡在主循环的 bsp_sdlog_task 里批量完成 */
+			  bsp_sdlog_feed(g1, g2);
 		  }
 	  }
 
@@ -205,13 +215,17 @@ int main(void)
 		  if (ALARM_SHOW)
 		  {	uint8_t alarm = (mark_alive(&adc_err_ms) ||
 		                     mark_alive(&adc_stall_ms) ||
-		                     mark_alive(&uart_stall_ms) ||
 		                     mark_alive(&adc_spike_ms) ||
 		                     mark_alive(&adc_drop_ms)) ? 1 : 0;
 			/* 每次刷新无条件重绘：LCD_DrawSkinText 在状态切换时会整行擦灰，
 			 * 若只在状态变化时画红块，红块会被擦掉后永久消失 */
 			LCD_Rect_Fill(SCREEN_W - 16, LAYOUT_STATUS_Y, 16, 16, alarm ? RED : GRAY);
 		  }
+		  /* SD 记录指示（红色 REC）：与告警块一样每轮无条件重绘 ——
+		   * LCD_DrawSkinText 状态切换时整行擦灰，只在变化时画会被擦掉。
+		   * 放在 ALARM_SHOW 之外：这是"数据正在落盘"的反馈，
+		   * 与告警上屏总开关无关，关告警时也必须能看见 */
+		  LCD_DrawRecFlag(bsp_sdlog_state() == SDLOG_RECORDING);
 		  /* 诊断行：ADC_DEBUG_SHOW_RAW=1 时恒显；否则只在"最近有受扰块被剔除 / 丢了样本"
 		   * 时自动上屏 —— 现场核对 ADC_BLOCK_SPREAD_* 阈值只需看这行的 K 与 R/Z 是否随
 		   * 干扰增长，不必再改宏重编译固件；无异常时清空该行（整行灰底重绘约 1ms，可忽略）。
@@ -294,7 +308,7 @@ void SystemClock_Config(void)
  *   bsp_adc_acquire.c  adc_stall_recover / adc_stall_monitor /
  *                      HAL_ADC_ErrorCallback / HAL_ADC_ConvHalfCpltCallback /
  *                      HAL_ADC_ConvCpltCallback
- *   bsp_uart_report.c  HAL_UART_ErrorCallback */
+ *   bsp_sdlog.c        SD 卡记录（阈值判定 / CSV 写入 / 拔插卡） */
 /* USER CODE END 4 */
 
 /**

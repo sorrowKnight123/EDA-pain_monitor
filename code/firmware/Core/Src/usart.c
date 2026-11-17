@@ -25,7 +25,6 @@
 /* USER CODE END 0 */
 
 UART_HandleTypeDef huart1;
-DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USART1 init function */
 
@@ -84,30 +83,9 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* USART1 DMA Init */
-    /* USART1_TX Init */
-    hdma_usart1_tx.Instance = DMA1_Channel4;
-    hdma_usart1_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
-    hdma_usart1_tx.Init.PeriphInc = DMA_PINC_DISABLE;
-    hdma_usart1_tx.Init.MemInc = DMA_MINC_ENABLE;
-    hdma_usart1_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-    hdma_usart1_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
-    hdma_usart1_tx.Init.Mode = DMA_NORMAL;
-    hdma_usart1_tx.Init.Priority = DMA_PRIORITY_MEDIUM;
-    if (HAL_DMA_Init(&hdma_usart1_tx) != HAL_OK)
-    {
-      Error_Handler();
-    }
-
-    __HAL_LINKDMA(uartHandle,hdmatx,hdma_usart1_tx);
-
-    /* USART1 interrupt Init
-     * 必须使能：DMA 发送完成后 HAL 只清了 CR3.DMAT 并打开 CR1.TCIE，
-     * gState 仍为 BUSY_TX；要等 TC 中断里 UART_EndTransmit_IT() 才置回 READY。
-     * 若 USART1_IRQn 不使能（或无 USART1_IRQHandler），gState 会永久卡在 BUSY_TX，
-     * 导致只有上电第一帧能发出去、之后全部被忙检查丢弃 */
-    HAL_NVIC_SetPriority(USART1_IRQn, 1, 0);
-    HAL_NVIC_EnableIRQ(USART1_IRQn);
+    /* 注意：本工程 USART1 只用于 bsp_sdlog 的阻塞式诊断输出（HAL_UART_Transmit
+     * 轮询发送）。50Hz DMA 数据上报功能已移除，因此这里不再配置 DMA1_Channel4，
+     * 也不使能 USART1/DMA 中断 —— 两者都已从 lcd.ioc 同步删除 */
   /* USER CODE BEGIN USART1_MspInit 1 */
 
   /* USER CODE END USART1_MspInit 1 */
@@ -131,8 +109,6 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
     */
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_9|GPIO_PIN_10);
 
-    /* USART1 DMA DeInit */
-    HAL_DMA_DeInit(uartHandle->hdmatx);
   /* USER CODE BEGIN USART1_MspDeInit 1 */
 
   /* USER CODE END USART1_MspDeInit 1 */

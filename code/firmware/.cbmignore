@@ -9,3 +9,5 @@
 .mxproject
 /Drivers/STM32F1xx_HAL_Driver/Src/
 /Drivers/CMSIS/Device/ST/STM32F1xx/Source/
+# 文档/手册知识图谱不在 P0/P1/P2 代码索引清单内
+/docs/

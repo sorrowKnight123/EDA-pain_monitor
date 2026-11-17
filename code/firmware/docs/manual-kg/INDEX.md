@@ -87,6 +87,11 @@
 
 ## 原始中间产物
 
-- `tools/_kg/toc.json` — 全量 782 条书签（层级/标题/页码区间）
-- `tools/_kg/sections.json` — 661 个小节的切片元数据
-- `tools/_kg/pages/*.txt` — 逐页原始文本（p.21-900）
+不随仓库保存（可由脚本重新生成）：
+
+```bash
+python tools/build_manual_kg.py
+```
+
+重建后会得到 `tools/_kg/toc.json`（782 条书签）与 `tools/_kg/sections.json`（小节切片元数据）。
+图谱正文（`docs/manual-kg/` 下的 Markdown）不依赖它们，日常查阅无需重建。

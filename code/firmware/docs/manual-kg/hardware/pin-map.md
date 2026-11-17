@@ -26,7 +26,7 @@
 | 音频 PCM1770 | I2S3 + SPI2 | I2S3 送音频数据，SPI2 做配置 | 输出到 J2 音频座 |
 | SPI Flash W25X16 | SPI1 | 见下（与网口共用 SPI1） | 16M bit = 2M 字节 |
 | 以太网 ENC28J60 | SPI1 | **/CS=PA4, SCK=PA5, MISO=PA6, MOSI=PA7, INT=PC2** | 10M 以太网，HR911105A RJ45 |
-| SD 卡 | SDIO（4位） | **D0=PC8, D1=PC9, D2=PC10, D3=PC11, CK=PC12, CMD=PD2, 在位检测=PC6** | **容量上限 2GB（手册 p.683/692/705 三处明确）；用 SDSC 卡，不能用 SDHC**；FAT16；初始化阶段 CK<400kHz |
+| SD 卡 | SDIO（4位） | **D0=PC8, D1=PC9, D2=PC10, D3=PC11, CK=PC12, CMD=PD2, 在位检测=PC6** | **容量上限 2GB（手册 p.683/692/705 三处明确）；用 SDSC 卡，不能用 SDHC**；FAT16；初始化阶段 CK<400kHz。**本项目已启用（bsp_sd.c），时钟 9MHz（CLKDIV=2）** |
 | CAN | CAN（VP230 收发器） | 由 F103 内部 CAN 引出 | 3.3V 收发器 |
 | 触摸屏（XPT2046/ADS7843） | SPI2（GPIO 模拟） | 片选与中断见 7.47；**中断=PG7** | 屏模块上的触摸芯片 |
 | nRF24L01+ 2.4G | SPI2 | 见 7.34 | IRQ 与 3.2 寸屏模块 SD 卡 CS 复用 |

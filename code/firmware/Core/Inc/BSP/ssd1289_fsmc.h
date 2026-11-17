@@ -76,8 +76,13 @@ void LCD_DebugLine(const char *text);
  * failed=0 黄色"还能采"，failed=1 红色"最近一轮均值不合格" */
 void LCD_DrawCalText(uint8_t failed);
 
+/* SD 记录指示：状态行右端（告警红块左侧，x=272..303）显示红色 "REC"。
+ * on=1 显示、on=0 擦成灰底。必须每轮 500ms 刷新时无条件重绘 ——
+ * LCD_DrawSkinText 在状态切换时会整行擦灰，只在变化时画会被擦掉后永久消失 */
+void LCD_DrawRecFlag(uint8_t on);
+
 /* 数值格式化：不带单位，小数位随量级自适应（<10 两位、<100 一位、其余整数）。
- * 屏上三行数值与串口上报都调用本函数，保证两处显示的字面完全一致；cap 建议 ≥ 8 */
+ * 屏上三行数值都调用本函数；cap 建议 ≥ 8 */
 void LCD_ValStr(char *out, size_t cap, float G);
 
 
